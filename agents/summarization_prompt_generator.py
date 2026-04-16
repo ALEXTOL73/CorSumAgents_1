@@ -1,6 +1,6 @@
 """
 Агент генерации промптов для суммаризации
-Версия 5.5.0 - Динамический few-shot из памяти (добавлено без удаления существующего кода)
+Версия 5.6.0 - Семантический поиск few-shot примеров, усиление влияния динамических примеров
 Особенности:
 - System Prompt: роль эксперта по промптам для суммаризации
 - LLM генерирует несколько вариантов промптов
@@ -8,12 +8,22 @@
 - Выбор лучшего промпта по метрикам суммаризации
 - ✅ ДОБАВЛЕНО: динамический подбор примеров из памяти агента
 - ✅ ДОБАВЛЕНА поддержка memory и передача примеров в user prompt
+- ✅ УЛУЧШЕНО: семантический поиск примеров через эмбеддинги (если доступно)
+- ✅ УВЕЛИЧЕНО количество динамических примеров до 3
+- ✅ ПОНИЖЕН порог схожести для более широкого выбора
 """
 from typing import Dict, Any, List, Optional
 from agents.base_agent import BaseAgent
 from utils.lmstudio_client import LMStudioClient
 from utils.agent_memory import AgentMemory
 from config import ENSEMBLE_SIZE, SUMMARY_DYNAMIC_FEW_SHOT_ENABLED, SUMMARY_MAX_FEW_SHOT_EXAMPLES, SUMMARY_FEW_SHOT_LENGTH_RATIO
+
+# Для семантического поиска (опционально)
+try:
+    from sentence_transformers import SentenceTransformer
+    _HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    _HAS_SENTENCE_TRANSFORMERS = False
 
 class SummarizationPromptGenerator(BaseAgent):
     """
@@ -24,6 +34,7 @@ class SummarizationPromptGenerator(BaseAgent):
     - Few-Shot Examples (примеры хороших промптов)
     - Chain of Thought (пошаговое создание промпта)
     - ✅ Динамические примеры из памяти агента
+    - ✅ Семантический поиск примеров (через эмбеддинги)
     """
 
     def __init__(self, client: LMStudioClient, num_variants: int = 3, memory: Optional[AgentMemory] = None):
@@ -38,7 +49,55 @@ class SummarizationPromptGenerator(BaseAgent):
         super().__init__(client, "SummarizationPromptGenerator")
         self.num_variants = num_variants
         self.memory = memory
-        self.logger.info(f"[SummarizationPromptGenerator] Инициализирован v5.5.0 (динамический few-shot: {SUMMARY_DYNAMIC_FEW_SHOT_ENABLED})")
+        self._embedding_model = None
+        self.logger.info(f"[SummarizationPromptGenerator] Инициализирован v5.6.0 (семантический few-shot: {SUMMARY_DYNAMIC_FEW_SHOT_ENABLED})")
+        if _HAS_SENTENCE_TRANSFORMERS:
+            self.logger.info("[SummarizationPromptGenerator] sentence-transformers доступен для семантического поиска")
+        else:
+            self.logger.warning("[SummarizationPromptGenerator] sentence-transformers не установлен, семантический поиск недоступен")
+
+    def _get_embedding_model(self):
+        """Ленивая загрузка модели эмбеддингов"""
+        if self._embedding_model is not None:
+            return self._embedding_model
+        if not _HAS_SENTENCE_TRANSFORMERS:
+            return None
+        try:
+            self._embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+            self.logger.info("[SummarizationPromptGenerator] Модель эмбеддингов загружена")
+        except Exception as e:
+            self.logger.warning(f"[SummarizationPromptGenerator] Не удалось загрузить модель эмбеддингов: {e}")
+            self._embedding_model = None
+        return self._embedding_model
+
+    def _get_embedding(self, text: str):
+        """Получение эмбеддинга текста"""
+        model = self._get_embedding_model()
+        if model is None:
+            return None
+        try:
+            return model.encode(text, convert_to_numpy=True)
+        except Exception:
+            return None
+
+    def _semantic_search_examples(self, input_text: str, examples: List[Dict], top_k: int = 3) -> List[Dict]:
+        """Поиск семантически близких примеров через эмбеддинги"""
+        if not examples or self._get_embedding_model() is None:
+            return examples[:top_k] if examples else []
+        input_emb = self._get_embedding(input_text)
+        if input_emb is None:
+            return examples[:top_k]
+        scored = []
+        for ex in examples:
+            ex_emb = self._get_embedding(ex.get("input", ""))
+            if ex_emb is None:
+                similarity = 0
+            else:
+                import numpy as np
+                similarity = np.dot(input_emb, ex_emb) / (np.linalg.norm(input_emb) * np.linalg.norm(ex_emb))
+            scored.append((similarity, ex))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [ex for _, ex in scored[:top_k]]
 
     def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -60,21 +119,26 @@ class SummarizationPromptGenerator(BaseAgent):
         language = "русском" if has_cyrillic else "английском"
         language_code = "ru" if has_cyrillic else "en"
 
-        # ✅ ДИНАМИЧЕСКИЕ ПРИМЕРЫ ИЗ ПАМЯТИ
+        # ✅ ДИНАМИЧЕСКИЕ ПРИМЕРЫ ИЗ ПАМЯТИ (с семантическим поиском)
         examples_text = ""
         if SUMMARY_DYNAMIC_FEW_SHOT_ENABLED and self.memory:
+            # Получаем примеры из памяти (по умолчанию метод get_summary_few_shot_examples)
             examples = self.memory.get_summary_few_shot_examples(
                 input_text=input_text,
                 domain=domain,
                 max_examples=SUMMARY_MAX_FEW_SHOT_EXAMPLES,
                 length_ratio=SUMMARY_FEW_SHOT_LENGTH_RATIO
             )
+            # Улучшаем семантическим поиском (если доступен)
+            if examples and self._get_embedding_model() is not None:
+                examples = self._semantic_search_examples(input_text, examples, top_k=SUMMARY_MAX_FEW_SHOT_EXAMPLES)
+                self.logger.info(f"[PromptGen] Семантический поиск: выбрано {len(examples)} примеров")
             if examples:
                 example_list = []
                 for i, ex in enumerate(examples, 1):
                     example_list.append(f"Пример {i}:\nВход: {ex['input']}\nВыход: {ex['output']}")
                 examples_text = "ПРИМЕРЫ ХОРОШИХ РЕЗЮМЕ:\n" + "\n\n".join(example_list)
-                self.logger.info(f"[PromptGen] Добавлено {len(examples)} динамических примеров суммаризации")
+                self.logger.info(f"[PromptGen] Добавлено {len(examples)} динамических примеров суммаризации (семантический поиск)")
 
         # Генерация нескольких вариантов промптов через LLM
         prompt_variants = self._generate_prompts_via_llm(language, language_code, input_text, examples_text)
@@ -126,6 +190,7 @@ class SummarizationPromptGenerator(BaseAgent):
                     prompt = self._extract_prompt_from_response(response)
                     if prompt:
                         variants.append(prompt)
+                        self.logger.debug(f"[PromptGen] Вариант #{i+1} (temp={temp}) сгенерирован")
 
             except Exception as e:
                 self.logger.error(f"[PromptGen] Ошибка генерации промпта #{i+1}: {e}")
@@ -191,10 +256,12 @@ Return ONLY the prompt text without additional comments."""
         # Статические примеры
         static_examples = self._get_static_examples(language_code)
 
-        # Объединяем примеры
-        all_examples = static_examples
+        # Объединяем примеры (динамические – первыми, так как они релевантнее)
+        all_examples = ""
         if dynamic_examples:
             all_examples = dynamic_examples + "\n\n" + static_examples
+        else:
+            all_examples = static_examples
 
         if language_code == "ru":
             return f"""Создай промпт для суммаризации текста.

@@ -1,11 +1,11 @@
 """
 Память агентов для обучения на предыдущих ошибках
-Версия 5.5.0 - Добавлены методы для динамического few-shot (без удаления существующего кода)
+Версия 5.6.0 - Добавлен семантический поиск few‑shot через эмбеддинги
 """
 import json
 import os
 import hashlib
-import time  # ✅ добавлен импорт time
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any, Optional
@@ -33,11 +33,15 @@ class AgentMemory:
         self.best_summary_prompts = {}
 
         self.prompt_cache = {}
-        self.prompt_usage_stats = {}      # ✅ статистика использования промптов
+        self.prompt_usage_stats = {}
 
-        # ✅ НОВЫЕ ПОЛЯ ДЛЯ ДИНАМИЧЕСКОГО FEW-SHOT
-        self.few_shot_examples = []       # примеры для коррекции
-        self.summary_few_shot_examples = [] # примеры для суммаризации
+        # Few-shot примеры
+        self.few_shot_examples = []
+        self.summary_few_shot_examples = []
+
+        # Кэш эмбеддингов для few-shot (опционально, лениво)
+        self._embedding_cache = {}
+        self._embedding_model = None
 
         self._load_memory()
         logger.info(f"[AgentMemory] Память загружена из {self.memory_dir}")
@@ -107,7 +111,7 @@ class AgentMemory:
                 with open(usage_file, "r", encoding="utf-8") as f:
                     self.prompt_usage_stats = json.load(f)
 
-            # ✅ ЗАГРУЗКА НОВЫХ ДАННЫХ ДЛЯ FEW-SHOT
+            # Загрузка few‑shot примеров
             few_shot_file = self.memory_dir / "few_shot_examples.json"
             if few_shot_file.exists():
                 with open(few_shot_file, "r", encoding="utf-8") as f:
@@ -167,7 +171,6 @@ class AgentMemory:
             with open(self.memory_dir / "prompt_usage_stats.json", "w", encoding="utf-8") as f:
                 json.dump(self.prompt_usage_stats, f, ensure_ascii=False, indent=2)
 
-            # ✅ СОХРАНЕНИЕ НОВЫХ ДАННЫХ
             with open(self.memory_dir / "few_shot_examples.json", "w", encoding="utf-8") as f:
                 json.dump(self.few_shot_examples, f, ensure_ascii=False, indent=2)
 
@@ -265,7 +268,6 @@ class AgentMemory:
                     self.best_prompts[domain].sort(key=lambda x: x.get("improvement", 0), reverse=True)
                     self.best_prompts[domain] = self.best_prompts[domain][:10]
 
-            # Обновление статистики использования промптов
             if prompt_hash not in self.prompt_usage_stats:
                 self.prompt_usage_stats[prompt_hash] = {
                     "prompt": prompt_used[:200],
@@ -285,7 +287,6 @@ class AgentMemory:
             if improvement > 0:
                 stats["success_count"] += 1
 
-        # ✅ ДОБАВЛЯЕМ ПРИМЕР В FEW-SHOT ДЛЯ КОРРЕКЦИИ (если улучшение положительное)
         if improvement > 0:
             self.add_few_shot_example(original, corrected, error_type="mixed", domain=domain, success=True)
 
@@ -328,7 +329,6 @@ class AgentMemory:
                     self.best_summary_prompts[domain].sort(key=lambda x: x.get("sumscore", 0), reverse=True)
                     self.best_summary_prompts[domain] = self.best_summary_prompts[domain][:10]
 
-            # Обновление статистики использования промптов для суммаризации
             if prompt_hash not in self.prompt_usage_stats:
                 self.prompt_usage_stats[prompt_hash] = {
                     "prompt": prompt_used[:200],
@@ -348,7 +348,6 @@ class AgentMemory:
             if improvement > 0.5:
                 stats["success_count"] += 1
 
-        # ✅ ДОБАВЛЯЕМ ПРИМЕР В FEW-SHOT ДЛЯ СУММАРИЗАЦИИ (если SumScore > 0.6)
         if sumscore > 0.6:
             self.add_summary_few_shot_example(original, summary, length=len(summary.split()), style="neutral", domain="general")
 
@@ -386,7 +385,6 @@ class AgentMemory:
 
     # ========== Статистика использования промптов ==========
     def get_prompt_usage_stats(self) -> Dict[str, Any]:
-        """Возвращает статистику использования промптов"""
         if not self.prompt_usage_stats:
             return {"total_prompts": 0, "avg_improvement": 0, "best_prompt": None, "success_rate": 0}
         total_usage = sum(s["usage_count"] for s in self.prompt_usage_stats.values())
@@ -416,7 +414,6 @@ class AgentMemory:
 
     # ========== Продвинутые методы для самообучения ==========
     def save_trajectory(self, trajectory: Dict[str, Any]):
-        """Сохраняет полную траекторию выполнения теста"""
         trajectories_file = self.memory_dir / "trajectories.json"
         try:
             if trajectories_file.exists():
@@ -433,7 +430,6 @@ class AgentMemory:
             logger.warning(f"[AgentMemory] Ошибка сохранения траектории: {e}")
 
     def get_relevant_experiences(self, current_context: str, limit: int = 3) -> List[Dict]:
-        """Извлекает релевантный опыт (упрощённо – последние успешные)"""
         traj_file = self.memory_dir / "trajectories.json"
         if not traj_file.exists():
             return []
@@ -445,19 +441,37 @@ class AgentMemory:
         except Exception:
             return []
 
-    # ========== НОВЫЕ МЕТОДЫ ДЛЯ ДИНАМИЧЕСКОГО FEW-SHOT ==========
+    # ========== СЕМАНТИЧЕСКИЙ ПОИСК ДЛЯ FEW-SHOT (с эмбеддингами) ==========
+    def _get_embedding_model(self):
+        """Ленивая загрузка модели эмбеддингов (той же, что в BertScore)"""
+        if self._embedding_model is not None:
+            return self._embedding_model
+        try:
+            from sentence_transformers import SentenceTransformer
+            self._embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+            logger.info("[AgentMemory] Загружена модель эмбеддингов для few-shot")
+        except Exception as e:
+            logger.warning(f"[AgentMemory] Не удалось загрузить модель эмбеддингов: {e}, будет использован fallback")
+            self._embedding_model = None
+        return self._embedding_model
+
+    def _get_embedding(self, text: str):
+        """Получение эмбеддинга с кэшированием"""
+        if text in self._embedding_cache:
+            return self._embedding_cache[text]
+        model = self._get_embedding_model()
+        if model is None:
+            return None
+        emb = model.encode(text, convert_to_numpy=True)
+        self._embedding_cache[text] = emb
+        if len(self._embedding_cache) > 500:
+            keys = list(self._embedding_cache.keys())[:250]
+            for k in keys:
+                del self._embedding_cache[k]
+        return emb
+
     def add_few_shot_example(self, input_text: str, corrected_text: str, error_type: str = None,
                              domain: str = "general", success: bool = True):
-        """
-        Добавление примера для few-shot коррекции
-
-        Args:
-            input_text: Исходный текст с ошибками
-            corrected_text: Исправленный текст
-            error_type: Тип ошибок (spelling, grammar, punctuation)
-            domain: Домен текста
-            success: Был ли пример успешным
-        """
         example = {
             "input": input_text[:500],
             "output": corrected_text[:500],
@@ -467,25 +481,13 @@ class AgentMemory:
             "timestamp": time.time(),
             "length": len(input_text)
         }
-        # Добавляем в начало, чтобы свежие были приоритетнее
         self.few_shot_examples.insert(0, example)
-        # Ограничиваем количество
         self.few_shot_examples = self.few_shot_examples[:100]
         self._save_memory()
         logger.debug(f"[Memory] Добавлен few-shot пример для {domain}")
 
     def add_summary_few_shot_example(self, original_text: str, summary: str, length: int,
                                       style: str = "neutral", domain: str = "general"):
-        """
-        Добавление примера для few-shot суммаризации
-
-        Args:
-            original_text: Исходный текст
-            summary: Краткое изложение
-            length: Длина резюме (количество слов)
-            style: Стиль (formal, neutral, concise)
-            domain: Домен
-        """
         example = {
             "input": original_text[:800],
             "output": summary[:300],
@@ -503,33 +505,44 @@ class AgentMemory:
     def get_few_shot_examples(self, input_text: str, domain: str = None, max_examples: int = 3,
                               similarity_threshold: float = 0.6) -> List[Dict]:
         """
-        Получение релевантных примеров для коррекции на основе:
-        - домена
-        - схожести текста (простейшая эвристика: пересечение слов)
-        - типа ошибок (если известен)
-
-        Args:
-            input_text: Текст для коррекции
-            domain: Желаемый домен
-            max_examples: Максимальное количество примеров
-            similarity_threshold: Порог схожести (0-1)
-
-        Returns:
-            Список примеров (каждый с ключами input, output)
+        Получение релевантных примеров с использованием семантического поиска (эмбеддинги).
+        Если эмбеддинги недоступны, использует fallback на пересечение слов.
         """
         if not self.few_shot_examples:
             return []
 
-        # Фильтрация по домену
         candidates = self.few_shot_examples
         if domain:
             candidates = [ex for ex in candidates if ex.get("domain") == domain]
-
-        # Если мало кандидатов, берём все успешные
         if len(candidates) < max_examples:
             candidates = [ex for ex in self.few_shot_examples if ex.get("success", True)]
 
-        # Оценка схожести (простая: пересечение слов)
+        # Пытаемся использовать эмбеддинги
+        model = self._get_embedding_model()
+        if model is not None:
+            try:
+                input_emb = self._get_embedding(input_text)
+                if input_emb is not None:
+                    import numpy as np
+                    scored = []
+                    for ex in candidates:
+                        ex_emb = self._get_embedding(ex["input"])
+                        if ex_emb is None:
+                            similarity = 0
+                        else:
+                            similarity = np.dot(input_emb, ex_emb) / (np.linalg.norm(input_emb) * np.linalg.norm(ex_emb))
+                        scored.append((similarity, ex))
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    filtered = [(sim, ex) for sim, ex in scored if sim >= similarity_threshold]
+                    if not filtered:
+                        filtered = scored[:max_examples]
+                    examples = [ex for _, ex in filtered[:max_examples]]
+                    logger.debug(f"[Memory] Найдено {len(examples)} семантических few-shot примеров")
+                    return examples
+            except Exception as e:
+                logger.warning(f"[Memory] Ошибка семантического поиска: {e}, переключение на fallback")
+
+        # Fallback: пересечение слов
         input_words = set(input_text.lower().split())
         scored = []
         for ex in candidates:
@@ -540,45 +553,52 @@ class AgentMemory:
                 intersection = len(input_words & ex_words)
                 similarity = intersection / max(len(input_words), len(ex_words))
             scored.append((similarity, ex))
-
-        # Сортировка по убыванию схожести
         scored.sort(key=lambda x: x[0], reverse=True)
-        # Берём только те, что выше порога, если есть
         filtered = [(sim, ex) for sim, ex in scored if sim >= similarity_threshold]
         if not filtered:
-            # Если нет подходящих по схожести, берём самые последние успешные
             filtered = scored[:max_examples]
-
         examples = [ex for _, ex in filtered[:max_examples]]
-        logger.debug(f"[Memory] Найдено {len(examples)} few-shot примеров (порог {similarity_threshold})")
+        logger.debug(f"[Memory] Найдено {len(examples)} fallback few-shot примеров")
         return examples
 
     def get_summary_few_shot_examples(self, input_text: str, domain: str = None,
                                       max_examples: int = 2, length_ratio: float = 0.3) -> List[Dict]:
         """
-        Получение релевантных примеров для суммаризации на основе:
-        - домена
-        - длины исходного текста (в пределах ±30%)
-        - стиля
-
-        Args:
-            input_text: Исходный текст
-            domain: Домен
-            max_examples: Максимальное количество примеров
-            length_ratio: Допустимое отклонение длины (0.3 = ±30%)
-
-        Returns:
-            Список примеров
+        Получение примеров для суммаризации – использует семантический поиск по содержанию.
         """
         if not self.summary_few_shot_examples:
             return []
 
-        input_len = len(input_text)
         candidates = self.summary_few_shot_examples
         if domain:
             candidates = [ex for ex in candidates if ex.get("domain") == domain]
 
-        # Оценка по длине
+        model = self._get_embedding_model()
+        if model is not None:
+            try:
+                input_emb = self._get_embedding(input_text)
+                if input_emb is not None:
+                    import numpy as np
+                    scored = []
+                    for ex in candidates:
+                        ex_emb = self._get_embedding(ex["input"])
+                        if ex_emb is None:
+                            similarity = 0
+                        else:
+                            similarity = np.dot(input_emb, ex_emb) / (np.linalg.norm(input_emb) * np.linalg.norm(ex_emb))
+                        scored.append((similarity, ex))
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    filtered = [(sim, ex) for sim, ex in scored if sim >= 0.5]  # порог чуть ниже
+                    if not filtered:
+                        filtered = scored[:max_examples]
+                    examples = [ex for _, ex in filtered[:max_examples]]
+                    logger.debug(f"[Memory] Найдено {len(examples)} семантических примеров суммаризации")
+                    return examples
+            except Exception as e:
+                logger.warning(f"[Memory] Ошибка семантического поиска для суммаризации: {e}")
+
+        # Fallback: оценка по длине
+        input_len = len(input_text)
         scored = []
         for ex in candidates:
             ex_len = ex.get("char_count", 0)
@@ -587,15 +607,12 @@ class AgentMemory:
             else:
                 ratio = min(input_len, ex_len) / max(input_len, ex_len)
             scored.append((ratio, ex))
-
         scored.sort(key=lambda x: x[0], reverse=True)
-        # Фильтр по порогу
         filtered = [(ratio, ex) for ratio, ex in scored if ratio >= (1 - length_ratio)]
         if not filtered:
             filtered = scored[:max_examples]
-
         examples = [ex for _, ex in filtered[:max_examples]]
-        logger.debug(f"[Memory] Найдено {len(examples)} few-shot примеров суммаризации")
+        logger.debug(f"[Memory] Найдено {len(examples)} fallback примеров суммаризации")
         return examples
 
     # ========== Общая статистика ==========
@@ -627,5 +644,7 @@ class AgentMemory:
         self.prompt_usage_stats = {}
         self.few_shot_examples = []
         self.summary_few_shot_examples = []
+        self._embedding_cache = {}
+        self._embedding_model = None
         self._save_memory()
         logger.info("[AgentMemory] Память очищена")

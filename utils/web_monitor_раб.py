@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Веб-интерфейс мониторинга CorSumAgentsAI
-Версия 5.7.14 - Улучшено отображение типов промптов (базовый, few-shot, CoT, из памяти)
+Версия 5.7.15 - Кнопка экспорта в правом верхнем углу, имя файла с датой
 """
 import json
 import threading
@@ -344,8 +344,12 @@ HTML_TEMPLATE = """
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
         .container { max-width: 1600px; margin: 0 auto; }
-        .header { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; }
-        .header h1 { color: #667eea; margin-bottom: 10px; }
+        .header { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+        .header-left { flex: 1; }
+        .header-left h1 { color: #667eea; margin-bottom: 10px; }
+        .header-left p { color: #666; }
+        .export-btn { background: #28a745; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-size: 18px; font-weight: bold; margin-left: 20px; transition: background 0.2s; }
+        .export-btn:hover { background: #218838; }
         .status-bar { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
         .status-item { background: white; padding: 15px; border-radius: 8px; flex: 1; min-width: 150px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .status-item h3 { color: #666; font-size: 14px; }
@@ -373,16 +377,17 @@ HTML_TEMPLATE = """
         .footer { text-align: center; color: white; margin-top: 20px; font-size: 12px; }
         .average-row { background-color: #e3f2fd; font-weight: bold; border-top: 2px solid #667eea; }
         .average-row td { background-color: #e3f2fd; }
-        .export-btn { background: #28a745; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-size: 14px; margin-bottom: 15px; }
-        .export-btn:hover { background: #218838; }
-        @media (max-width: 768px) { .charts-grid, .examples-grid { grid-template-columns: 1fr; } }
+        @media (max-width: 768px) { .charts-grid, .examples-grid { grid-template-columns: 1fr; } .header { flex-direction: column; align-items: flex-start; } .export-btn { margin-left: 0; margin-top: 15px; } }
     </style>
 </head>
 <body>
 <div class="container">
     <div class="header">
-        <h1>🚀 CorSumAgentsAI - Мониторинг</h1>
-        <p>Адрес: http://127.0.0.1:{{port}} | Обновление каждые 30 секунд</p>
+        <div class="header-left">
+            <h1>🚀 CorSumAgentsAI - Мониторинг</h1>
+            <p>Адрес: http://127.0.0.1:{{port}} | Обновление каждые 30 секунд</p>
+        </div>
+        <button id="exportExcelBtn" class="export-btn">📊 Экспорт в Excel</button>
     </div>
     <div class="status-bar">
         <div class="status-item"><h3>Статус</h3><p id="status">-</p></div>
@@ -408,8 +413,6 @@ HTML_TEMPLATE = """
         <div class="example-card"><h3>✏️ Исправленные Тексты</h3><div id="corrected-texts">Загрузка...</div></div>
         <div class="example-card"><h3>📄 Резюме</h3><div id="summary-texts">Загрузка...</div></div>
     </div>
-
-    <button id="exportExcelBtn" class="export-btn">📊 Экспорт в Excel (web_metrics.xlsx)</button>
 
     <div class="table-container">
         <table id="metrics-table">
@@ -592,6 +595,14 @@ HTML_TEMPLATE = """
         return entries.map(e => `${e.num} - №${e.num} : ${e.count} раз`).join('\\n');
     }
 
+    function getFormattedDate() {
+        const now = new Date();
+        const day = String(now.getDate()).padStart(2, '0');
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const year = String(now.getFullYear()).slice(2);
+        return `${day}${month}${year}`;
+    }
+
     function exportToExcel() {
         fetch('/api/status')
             .then(res => res.json())
@@ -679,7 +690,8 @@ HTML_TEMPLATE = """
                 const ws = XLSX.utils.aoa_to_sheet(rows);
                 const wb = XLSX.utils.book_new();
                 XLSX.utils.book_append_sheet(wb, ws, 'Метрики');
-                XLSX.writeFile(wb, 'web_metrics.xlsx');
+                const fileName = `Таблица метрик_${getFormattedDate()}.xlsx`;
+                XLSX.writeFile(wb, fileName);
             })
             .catch(e => console.error('Ошибка экспорта:', e));
     }
@@ -768,7 +780,7 @@ HTML_TEMPLATE = """
                 <td>${formatMetric(m.SumScore, 'SumScore')}</td>
                 <td>${promptSumDisplay}</td>
                 <td>${formatDuration(duration)}</td>
-            </tr>`;
+             </tr>`;
         }
 
         if (completedTests.length > 0) {
@@ -789,7 +801,7 @@ HTML_TEMPLATE = """
                 <td><strong>${avg.SumScore}</strong></td>
                 <td style="white-space: pre-line;"><strong>${formatPromptStats(promptSumStats)}</strong></td>
                 <td><strong>${durationInfo}</strong></td>
-            </tr>`;
+             </tr>`;
         }
 
         tbody.innerHTML = rows;

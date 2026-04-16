@@ -432,7 +432,7 @@ class LMStudioClient:
             prompt: str,
             temperature: float = 0.7,
             system_prompt: str = "",
-            max_tokens: int = 1024,
+            max_tokens: int = 512,
             use_cache: bool = True,
             model: str = None
     ) -> str:

@@ -1,6 +1,6 @@
 """
 Агент генерации промптов для коррекции текста
-Версия 5.5.0 - Динамический few-shot из памяти
+Версия 5.6.0 - Семантический поиск few-shot примеров
 """
 import random
 from typing import Dict, Any, List, Tuple, Optional
@@ -76,21 +76,26 @@ Error: "didnt came" (grammar) → correction: "didn't come" """,
         language_code = "ru" if has_cyrillic else "en"
         domain = state.get("domain", "general")
 
-        # Динамические примеры из памяти
+        # ✅ Динамические примеры из памяти (семантический поиск)
         examples_text = ""
         if DYNAMIC_FEW_SHOT_ENABLED and self.memory:
-            examples = self.memory.get_few_shot_examples(
-                input_text=input_text,
-                domain=domain,
-                max_examples=MAX_FEW_SHOT_EXAMPLES,
-                similarity_threshold=FEW_SHOT_SIMILARITY_THRESHOLD
-            )
+            # Используем семантический поиск (если метод есть) или старый
+            if hasattr(self.memory, 'get_few_shot_examples'):
+                examples = self.memory.get_few_shot_examples(
+                    input_text=input_text,
+                    domain=domain,
+                    max_examples=MAX_FEW_SHOT_EXAMPLES,
+                    similarity_threshold=FEW_SHOT_SIMILARITY_THRESHOLD
+                )
+            else:
+                # fallback
+                examples = self.memory.get_few_shot_examples(input_text, domain, MAX_FEW_SHOT_EXAMPLES, FEW_SHOT_SIMILARITY_THRESHOLD)
             if examples:
                 example_list = []
                 for i, ex in enumerate(examples, 1):
                     example_list.append(f"Пример {i}:\nВход: {ex['input']}\nВыход: {ex['output']}")
                 examples_text = "ПРИМЕРЫ УСПЕШНОЙ КОРРЕКЦИИ:\n" + "\n\n".join(example_list)
-                self.logger.info(f"[PromptGen] Добавлено {len(examples)} динамических примеров")
+                self.logger.info(f"[PromptGen] Добавлено {len(examples)} динамических примеров (семантический поиск)")
 
         prompt_variants = self._generate_prompts_via_llm(language, language_code, input_text, examples_text)
         prompt_variants = [self._ensure_text_placeholder(p) for p in prompt_variants]

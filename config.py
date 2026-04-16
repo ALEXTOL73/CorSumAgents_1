@@ -8,14 +8,14 @@ from pathlib import Path
 # =============================================================================
 # 🔹 Обработка Файлов
 # =============================================================================
-SKIP_PROCESSED = 0       # 1 - Пропустить обработанные файлы
+SKIP_PROCESSED = 1       # 1 - Пропустить обработанные файлы
 
 # 🔹 LM Studio Настройки
 # =============================================================================
 LM_STUDIO_HOST = "127.0.0.1"
 LM_STUDIO_PORT = 1234
 MODEL_NAME = "gemma-3-12b-it"
-REQUEST_TIMEOUT = 60
+REQUEST_TIMEOUT = 50
 LM_STUDIO_MIN_REQUEST_INTERVAL = 0.2
 LM_STUDIO_MAX_TOKENS = 4096
 
@@ -23,12 +23,20 @@ LM_STUDIO_MAX_TOKENS = 4096
 # ⭐ ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА
 # =============================================================================
 PARALLEL_TESTS_ENABLED = True
-PARALLEL_TESTS_MAX_WORKERS = 4
+PARALLEL_TESTS_MAX_WORKERS = 5
+
+# =============================================================================
+# ⭐ РАННИЙ ОСТАНОВ (EARLY STOPPING) ДЛЯ АНСАМБЛЕЙ
+# =============================================================================
+EARLY_STOP_CORRECTION = True
+EARLY_STOP_CORRECTION_THRESHOLD = 0.95      # если CorScore >= этого значения, прекращаем генерацию
+EARLY_STOP_SUMMARY = True
+EARLY_STOP_SUMMARY_THRESHOLD = 0.90
 
 # =============================================================================
 # 🔹 Настройки Агентов
 # =============================================================================
-ENSEMBLE_SIZE = 3
+ENSEMBLE_SIZE = 2
 MAX_RETRIES = 1
 TEMPERATURE_RANGE = (0.1, 0.8)
 MAX_CROSS_VALIDATION_ITERATIONS = 5
@@ -38,21 +46,21 @@ MAX_TOTAL_ITERATIONS = 20
 # =============================================================================
 # ⭐ ПОРОГИ ДЛЯ МЕТРИК И РАБОТЫ АГЕНТОВ
 # =============================================================================
-MIN_WER_IMPROVEMENT = 0.2
-MIN_LEV_SIMILARITY_IMPROVEMENT = 0.01
-MIN_LLM_JUDGE_SCORE = 5
+MIN_WER_IMPROVEMENT = 0.1
+MIN_LEV_SIMILARITY_IMPROVEMENT = 0.001
+MIN_LLM_JUDGE_SCORE = 6
 MIN_SEMANTIC_SIMILARITY = 0.5
-MIN_METEOR_SCORE = 0.2
+MIN_METEOR_SCORE = 0.3
 MIN_PERPLEXITY = 0.7
 
-REFLECTION_ENABLED = True   # ВЫКЛЮЧИЛ ДЛЯ УСКОРЕНИЯ
+REFLECTION_ENABLED = False   # ВЫКЛЮЧИЛ ДЛЯ УСКОРЕНИЯ
 REFLECTION_THRESHOLD_SUMSCORE = 0.55
 REFLECTION_THRESHOLD_CORSCORE = 0.4
 
 CROSS_VALIDATION_EARLY_STOP_SUMSCORE = 0.85
 AGGREGATION_IMPROVEMENT_THRESHOLD = 0.90
-LEV_WEIGHT = 5
-PERPLEXITY_WEIGHT = 0.5
+LEV_WEIGHT = 8
+PERPLEXITY_WEIGHT = 0.3
 
 # =============================================================================
 # ⭐ АДАПТИВНАЯ КОРРЕКЦИЯ
@@ -62,7 +70,7 @@ MAX_ADAPTIVE_ATTEMPTS = 1
 MAX_LEV_RETRY_ATTEMPTS = 1
 TEMP_RETRY_TEMPS = [0.1, 0.5, 0.9]
 LEV_RETRY_TEMPS = TEMP_RETRY_TEMPS
-DELTA_LEV_THRESHOLD = 0.0
+DELTA_LEV_THRESHOLD = 0.02
 USE_SAVED_PROMPTS = True
 USE_FEW_SHOT_PROMPT = True
 USE_CHAIN_OF_THOUGHT_PROMPT = True
@@ -71,30 +79,30 @@ USE_CHAIN_OF_THOUGHT_PROMPT = True
 # ⭐ ДИНАМИЧЕСКИЕ ТЕМПЕРАТУРЫ И SELF-CONSISTENCY
 # =============================================================================
 DYNAMIC_TEMPERATURES_ENABLED = True
-SELF_CONSISTENCY_ENABLED = True   # ИСПРАВИЛ ДЛЯ УСКОРЕНИЯ
+SELF_CONSISTENCY_ENABLED = False   # ИСПРАВИЛ ДЛЯ УСКОРЕНИЯ
 SELF_CONSISTENCY_EXTRA_COUNT = 2
 ERROR_PROFILE_ENABLED = True
 
 # =============================================================================
 # ⭐ НАСТРОЙКИ СУММАРИЗАЦИИ
 # =============================================================================
-SUMMARY_ENSEMBLE_SIZE = 3
+SUMMARY_ENSEMBLE_SIZE = 2
 SUMMARY_TEMPERATURE_RANGE = (0.2, 1.9)
 SUMMARY_ADAPTIVE_ENABLED = True
 SUMMARY_MAX_RETRY_ATTEMPTS = 1
-SUMMARY_RETRY_TEMPS = [0.2, 0.5, 1.0]
+SUMMARY_RETRY_TEMPS = [0.3, 0.6, 1.0]
 SUMMARY_USE_SAVED_PROMPTS = True
 SUMMARY_USE_FEW_SHOT = True
 SUMMARY_USE_CHAIN_OF_THOUGHT = True
 SUMMARY_AGGREGATION_ROUNDS = 1
-SUMMARY_SELF_CONSISTENCY_ENABLED = True
+SUMMARY_SELF_CONSISTENCY_ENABLED = False     # ИСПРАВИЛ ДЛЯ УСКОРЕНИЯ
 SUMMARY_SELF_CONSISTENCY_EXTRA_COUNT = 1
 SUMMARY_DYNAMIC_TEMPERATURES = True
 
 # =============================================================================
 # ⭐ МНОГОРАУНДОВАЯ АГРЕГАЦИЯ
 # =============================================================================
-MAX_AGGREGATION_ROUNDS = 2
+MAX_AGGREGATION_ROUNDS = 1
 
 # =============================================================================
 # ⭐ БАЙЕСОВСКАЯ ОПТИМИЗАЦИЯ
@@ -107,12 +115,12 @@ OPTIMIZATION_WINDOW_SIZE = 20
 # =============================================================================
 DYNAMIC_FEW_SHOT_ENABLED = True
 MAX_FEW_SHOT_EXAMPLES = 3
-FEW_SHOT_SIMILARITY_THRESHOLD = 0.6  # порог схожести для подбора примеров
+FEW_SHOT_SIMILARITY_THRESHOLD = 0.5  # порог схожести для подбора примеров
 
 # Для суммаризации
 SUMMARY_DYNAMIC_FEW_SHOT_ENABLED = True
-SUMMARY_MAX_FEW_SHOT_EXAMPLES = 2
-SUMMARY_FEW_SHOT_LENGTH_RATIO = 0.3  # допустимое отклонение длины ±30%
+SUMMARY_MAX_FEW_SHOT_EXAMPLES = 3
+SUMMARY_FEW_SHOT_LENGTH_RATIO = 0.2  # допустимое отклонение длины ±30%
 
 # CoT для оценки
 JUDGE_USE_COT = True  # использовать Chain-of-Thought при оценке суммаризации
@@ -135,7 +143,7 @@ WEB_MONITOR_UPDATE_INTERVAL = 30
 # ⭐ КЭШИРОВАНИЕ ПРОМПТОВ
 # =============================================================================
 PROMPT_CACHE_ENABLED = True
-PROMPT_CACHE_MAX_SIZE = 100
+PROMPT_CACHE_MAX_SIZE = 500
 PROMPT_CACHE_MIN_IMPROVEMENT = 0.1
 
 # =============================================================================

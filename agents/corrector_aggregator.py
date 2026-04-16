@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Агент-агрегатор для объединения выходов ансамбля корректоров
-Версия 5.0.7 - Добавлен детальный вывод метрик вариантов и агрегации
+Версия 5.0.9 - Получение типов промптов и температур из state
 """
 from typing import Dict, Any, List
 from agents.base_agent import BaseAgent
@@ -49,6 +49,16 @@ class CorrectorAggregator(BaseAgent):
         reference_text = state.get("reference_text", "")
         input_text = state.get("input_text", "")
 
+        # Получаем типы промптов и температуры из state (теперь они передаются ансамблем)
+        ensemble_prompts = state.get("ensemble_prompts", [])
+        ensemble_temps = state.get("ensemble_temperatures", [])
+
+        # Дополняем недостающие значения
+        if len(ensemble_prompts) < len(ensemble_outputs):
+            ensemble_prompts.extend(["N/A"] * (len(ensemble_outputs) - len(ensemble_prompts)))
+        if len(ensemble_temps) < len(ensemble_outputs):
+            ensemble_temps.extend(["N/A"] * (len(ensemble_outputs) - len(ensemble_temps)))
+
         print(f"  📊 Получено вариантов: {len(ensemble_outputs)}")
         print()
 
@@ -64,28 +74,32 @@ class CorrectorAggregator(BaseAgent):
         wer_original = self.wer_calc.calculate(reference_text, input_text) if reference_text else 0.5
         lev_original = self.lev_calc.calculate(reference_text, input_text) if reference_text else 0.0
 
-        print("  ┌─────────────────────────────────────────────────────────────────────────┐")
-        print("  │                      ОЦЕНКА ВАРИАНТОВ КОРРЕКЦИИ                         │")
-        print("  ├─────────────────────────────────────────────────────────────────────────┤")
-        print("  │ № │     WER     │  LevRating  │ Perplexity │   ΔWER   │  ΔLev   │  Score│")
-        print("  ├─────────────────────────────────────────────────────────────────────────┤")
+        print("  ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐")
+        print("  │                              ОЦЕНКА ВАРИАНТОВ КОРРЕКЦИИ                                          │")
+        print("  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤")
+        print("  │ № │     WER     │  LevRating  │ Perplexity │   ΔWER   │  ΔLev   │  Score  │   Промпт    │ Temp   │")
+        print("  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤")
 
         scores = []
         for i, variant in enumerate(ensemble_outputs):
             if not variant:
                 scores.append(-1e9)
+                prompt_short = ensemble_prompts[i][:12] if i < len(ensemble_prompts) else "N/A"
+                temp_val = ensemble_temps[i] if i < len(ensemble_temps) else "N/A"
+                print(f"  │ {i+1} │   пустой    │             │            │         │         │         │ {prompt_short:10} │{temp_val:4} │")
                 continue
             wer_v = self.wer_calc.calculate(reference_text, variant) if reference_text else 0.5
             lev_v = self.lev_calc.calculate(reference_text, variant) if reference_text else 0.0
             ppl = self.perplexity_calc.calculate(variant, reference_text).get("perplexity", 1.0) if reference_text else 1.0
             delta_wer = wer_original - wer_v
             delta_lev = lev_v - lev_original
-            # Score = delta_WER + LEV_WEIGHT*delta_Lev + (1 - perplexity)*PERPLEXITY_WEIGHT
-            score = delta_wer + LEV_WEIGHT * delta_lev + (1.0 - ppl)*PERPLEXITY_WEIGHT
+            score = delta_wer + LEV_WEIGHT * delta_lev + (1.0 - ppl) * PERPLEXITY_WEIGHT
             scores.append(score)
-            print(f"  │ {i+1}  │ {wer_v:8.4f}   │ {lev_v:8.4f}    │ {ppl:8.4f}   │ {delta_wer:+6.4f}  │ {delta_lev:+6.4f} │{score:7.3f}│")
+            prompt_short = ensemble_prompts[i][:12] if i < len(ensemble_prompts) else "N/A"
+            temp_val = ensemble_temps[i] if i < len(ensemble_temps) else "N/A"
+            print(f"  │ {i+1} │ {wer_v:8.4f}│ {lev_v:8.4f}  │ {ppl:8.4f} │ {delta_wer:+6.4f} │ {delta_lev:+6.4f} │{score:7.3f} │ {prompt_short:10}  │{temp_val:4}│")
 
-        print("  └─────────────────────────────────────────────────────────────────────────┘")
+        print("  └──────────────────────────────────────────────────────────────────────────────────────────────────┘")
         print()
 
         best_idx = max(range(len(scores)), key=lambda i: scores[i])

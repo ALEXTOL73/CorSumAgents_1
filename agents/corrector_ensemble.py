@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Агент коррекции на базе ансамбля LLM
-Версия 5.8.0 - Пост-обработка результатов + унификация весов
+Версия 5.10.2 - Сохранение типов промптов и температур в state для агрегатора
 """
 from typing import Dict, Any, List, Optional, Tuple
 from agents.base_agent import BaseAgent
@@ -10,7 +10,7 @@ from utils.agent_memory import AgentMemory
 from metrics.wer_calculator import WERCalculator
 from metrics.levenstein_calculator import LevenshteinCalculator
 from metrics.perplexity_calculator import PerplexityCalculator
-from utils.text_postprocessor import TextPostprocessor  # ✅ добавлен пост-процессор
+from utils.text_postprocessor import TextPostprocessor
 from config import (
     ENSEMBLE_SIZE, TEMPERATURE_RANGE, MODEL_NAME,
     ADAPTIVE_LEV_RETRY_ENABLED, MAX_LEV_RETRY_ATTEMPTS, DELTA_LEV_THRESHOLD,
@@ -94,7 +94,7 @@ class CorrectorEnsemble(BaseAgent):
         self.perplexity_calc = PerplexityCalculator(language="ru")
         self.saved_prompts = self._load_saved_prompts()
         self.error_profile = {}
-        self.logger.info(f"[CorrectorEnsemble] Инициализирован v5.8.0 (пост-обработка)")
+        self.logger.info(f"[CorrectorEnsemble] Инициализирован v5.10.2 (сохранение типов промптов)")
 
     def _load_saved_prompts(self) -> List[Dict[str, Any]]:
         if not self.memory or not USE_SAVED_PROMPTS:
@@ -183,21 +183,31 @@ class CorrectorEnsemble(BaseAgent):
         temperatures = self._compute_dynamic_temperatures(input_text, reference_text)
         self.logger.info(f"[Ensemble] Динамические температуры: {temperatures}")
 
-        variants, temps, prompts_list = self._generate_variants(prompt_template, input_text, reference_text, temperatures)
+        # Генерируем варианты с разными промптами (базовый, few-shot, CoT, saved)
+        variants, temps, prompt_types, full_prompts = self._generate_variants_with_prompts(
+            prompt_template, input_text, reference_text, temperatures, domain
+        )
 
         if SELF_CONSISTENCY_ENABLED and len(variants) >= 2:
             best_temp = temps[0] if temps else 0.5
-            variants, temps, prompts_list = self._add_self_consistency(
-                variants, temps, prompts_list, input_text, reference_text, best_temp
+            best_type = prompt_types[0] if prompt_types else "базовый"
+            best_prompt = full_prompts[0] if full_prompts else prompt_template
+            variants, temps, prompt_types, full_prompts = self._add_self_consistency(
+                variants, temps, prompt_types, full_prompts, input_text, reference_text, best_temp, best_type, best_prompt
             )
 
         while len(variants) < 3:
             variants.append(input_text)
             temps.append(0.5)
-            prompts_list.append(prompt_template)
+            prompt_types.append("базовый (заглушка)")
+            full_prompts.append(prompt_template)
 
+        # ✅ СОХРАНЯЕМ В STATE ВСЕ НЕОБХОДИМЫЕ СПИСКИ
         state["ensemble_outputs"] = variants.copy()
-        best_result = self._select_best_by_score(variants, reference_text, input_text, temps, prompts_list)
+        state["ensemble_prompts"] = prompt_types.copy()      # типы промптов
+        state["ensemble_temperatures"] = temps.copy()        # температуры
+
+        best_result = self._select_best_by_score(variants, reference_text, input_text, temps, full_prompts, prompt_types)
 
         corrected = best_result.get("corrected_text", "")
         if not corrected or len(corrected.strip()) < len(input_text.strip()) * 0.3:
@@ -231,59 +241,138 @@ class CorrectorEnsemble(BaseAgent):
         best_result["ensemble_outputs"] = variants
         return best_result
 
-    def _generate_variants(self, prompt_template: str, input_text: str, reference_text: str,
-                          temperatures: List[float]) -> Tuple[List[str], List[float], List[str]]:
-        variants, temps_used, prompts_used = [], [], []
+    def _generate_variants_with_prompts(self, base_prompt: str, input_text: str, reference_text: str,
+                                        temperatures: List[float], domain: str) -> Tuple[List[str], List[float], List[str], List[str]]:
+        """
+        Генерирует варианты с использованием:
+        - базового промпта с разными температурами
+        - few-shot промпта (если доступен)
+        - CoT промпта (если доступен)
+        - сохранённых промптов из памяти (если доступны)
+        Возвращает: (variants, temps, prompt_types, full_prompts)
+        """
+        variants, temps_used, prompt_types, full_prompts = [], [], [], []
+
+        # 1. Базовый промпт с разными температурами
         for temp in temperatures:
             try:
-                full_prompt = prompt_template.format(text=input_text)
-                self.logger.debug(f"[Ensemble] Промпт (temp={temp}): {full_prompt[:200]}")
-                response = self.client.generate(
-                    prompt=full_prompt,
-                    temperature=temp,
-                    system_prompt="Ты профессиональный редактор. Возвращай только исправленный текст, сохраняя стиль автора."
-                )
-                self.logger.debug(f"[Ensemble] Ответ (temp={temp}): {response[:100] if response else 'None'}")
-                if response and len(response.strip()) >= len(input_text.strip()) * 0.3:
-                    # ✅ пост-обработка
-                    cleaned = TextPostprocessor.clean_text(response.strip())
-                    variants.append(cleaned)
+                full_prompt = base_prompt.format(text=input_text)
+                response = self._generate_with_prompt(full_prompt, temp)
+                if response:
+                    variants.append(response)
                     temps_used.append(temp)
-                    prompts_used.append(full_prompt)
+                    prompt_types.append("базовый")
+                    full_prompts.append(full_prompt)
                 else:
                     variants.append(input_text)
                     temps_used.append(temp)
-                    prompts_used.append(full_prompt)
+                    prompt_types.append("базовый (ошибка)")
+                    full_prompts.append(full_prompt)
             except Exception as e:
-                self.logger.warning(f"[Ensemble] Ошибка генерации (temp={temp}): {e}")
+                self.logger.warning(f"[Ensemble] Ошибка генерации с базовым промптом (temp={temp}): {e}")
                 variants.append(input_text)
                 temps_used.append(temp)
-                prompts_used.append(prompt_template)
-        return variants, temps_used, prompts_used
+                prompt_types.append("базовый (ошибка)")
+                full_prompts.append(base_prompt)
 
-    def _add_self_consistency(self, variants: List[str], temps: List[float], prompts: List[str],
-                              input_text: str, reference_text: str, best_temp: float) -> Tuple[List[str], List[float], List[str]]:
+        # 2. Few-shot промпт (низкая температура для следования примерам)
+        if USE_FEW_SHOT_PROMPT and self.memory:
+            try:
+                examples = self.memory.get_few_shot_examples(input_text, domain, max_examples=3, similarity_threshold=0.5)
+                few_shot_prompt = self._build_few_shot_prompt(examples, input_text)
+                response = self._generate_with_prompt(few_shot_prompt, 0.3)
+                if response:
+                    variants.append(response)
+                    temps_used.append(0.3)
+                    prompt_types.append("few-shot")
+                    full_prompts.append(few_shot_prompt)
+                    self.logger.info("[Ensemble] Few-shot вариант добавлен")
+            except Exception as e:
+                self.logger.warning(f"[Ensemble] Ошибка few-shot генерации: {e}")
+
+        # 3. CoT промпт (средняя температура)
+        if USE_CHAIN_OF_THOUGHT_PROMPT:
+            try:
+                cot_prompt = self.CHAIN_OF_THOUGHT_PROMPT.format(text=input_text)
+                response = self._generate_with_prompt(cot_prompt, 0.5)
+                if response:
+                    variants.append(response)
+                    temps_used.append(0.5)
+                    prompt_types.append("CoT")
+                    full_prompts.append(cot_prompt)
+                    self.logger.info("[Ensemble] CoT вариант добавлен")
+            except Exception as e:
+                self.logger.warning(f"[Ensemble] Ошибка CoT генерации: {e}")
+
+        # 4. Сохранённые промпты из памяти
+        if USE_SAVED_PROMPTS and self.saved_prompts:
+            for i, saved in enumerate(self.saved_prompts[:2]):
+                try:
+                    saved_prompt = self._ensure_text_placeholder(saved.get("prompt", base_prompt))
+                    full_prompt = saved_prompt.format(text=input_text)
+                    response = self._generate_with_prompt(full_prompt, 0.4)
+                    if response:
+                        variants.append(response)
+                        temps_used.append(0.4)
+                        prompt_types.append("saved")
+                        full_prompts.append(full_prompt)
+                        self.logger.info(f"[Ensemble] Сохранённый промпт #{i+1} добавлен")
+                except Exception as e:
+                    self.logger.warning(f"[Ensemble] Ошибка с сохранённым промптом {i}: {e}")
+
+        return variants, temps_used, prompt_types, full_prompts
+
+    def _generate_with_prompt(self, full_prompt: str, temperature: float) -> Optional[str]:
+        """Генерация с пост-обработкой"""
+        try:
+            response = self.client.generate(
+                prompt=full_prompt,
+                temperature=temperature,
+                system_prompt="Ты профессиональный редактор. Возвращай только исправленный текст, сохраняя стиль автора."
+            )
+            if response and len(response.strip()) >= 30:
+                cleaned = TextPostprocessor.clean_text(response.strip())
+                return cleaned
+        except Exception as e:
+            self.logger.warning(f"[Ensemble] Ошибка генерации: {e}")
+        return None
+
+    def _build_few_shot_prompt(self, examples: List[Dict], input_text: str) -> str:
+        """Формирует промпт с динамическими few-shot примерами"""
+        example_text = "ПРИМЕРЫ УСПЕШНОЙ КОРРЕКЦИИ:\n"
+        for i, ex in enumerate(examples, 1):
+            example_text += f"Пример {i}:\nВход: {ex['input']}\nВыход: {ex['output']}\n\n"
+        prompt = f"""{example_text}
+ТЕПЕРЬ ИСПРАВЬ ЭТОТ ТЕКСТ, СОХРАНЯЯ СТИЛЬ:
+{input_text}
+
+ИСПРАВЛЕННЫЙ ТЕКСТ:"""
+        return prompt
+
+    def _add_self_consistency(self, variants: List[str], temps: List[float], prompt_types: List[str],
+                              full_prompts: List[str], input_text: str, reference_text: str,
+                              best_temp: float, best_type: str, best_prompt: str) -> Tuple[List[str], List[float], List[str], List[str]]:
         self.logger.info(f"[Ensemble] Self-consistency: добавление {SELF_CONSISTENCY_EXTRA_COUNT} вариантов с temp={best_temp}")
         for _ in range(SELF_CONSISTENCY_EXTRA_COUNT):
             try:
-                full_prompt = prompts[0].format(text=input_text)
+                full_prompt = best_prompt.format(text=input_text) if "{text}" in best_prompt else best_prompt + f"\n\nТЕКСТ ДЛЯ КОРРЕКЦИИ:\n{input_text}\n\nИСПРАВЛЕННЫЙ ТЕКСТ:"
                 response = self.client.generate(
                     prompt=full_prompt,
                     temperature=best_temp,
                     system_prompt="Ты профессиональный редактор. Возвращай только исправленный текст, сохраняя стиль автора."
                 )
                 if response and len(response.strip()) >= len(input_text.strip()) * 0.3:
-                    # ✅ пост-обработка
                     cleaned = TextPostprocessor.clean_text(response.strip())
                     variants.append(cleaned)
                     temps.append(best_temp)
-                    prompts.append(full_prompt)
+                    prompt_types.append(f"{best_type} (self-consistency)")
+                    full_prompts.append(full_prompt)
             except Exception as e:
                 self.logger.warning(f"[Ensemble] Self-consistency ошибка: {e}")
-        return variants, temps, prompts
+        return variants, temps, prompt_types, full_prompts
 
     def _select_best_by_score(self, variants: List[str], reference: str, original: str,
-                             temperatures: List[float], prompts: List[str]) -> Dict[str, Any]:
+                             temperatures: List[float], full_prompts: List[str], prompt_types: List[str]) -> Dict[str, Any]:
         wer_original = self.wer_calc.calculate(reference, original) if reference else 0.5
         lev_original = self.lev_calc.calculate(reference, original) if reference else 0.0
 
@@ -291,7 +380,7 @@ class CorrectorEnsemble(BaseAgent):
         print("  📊 ОЦЕНКА ВАРИАНТОВ КОРРЕКЦИИ")
         print("-" * 80)
 
-        best_variant, best_score, best_idx, best_temp, best_prompt = original, -float('inf'), 0, temperatures[0] if temperatures else 0.5, prompts[0] if prompts else ""
+        best_variant, best_score, best_idx, best_temp, best_prompt, best_type = original, -float('inf'), 0, temperatures[0] if temperatures else 0.5, full_prompts[0] if full_prompts else "", prompt_types[0] if prompt_types else "базовый"
 
         for i, variant in enumerate(variants):
             if not variant:
@@ -302,21 +391,21 @@ class CorrectorEnsemble(BaseAgent):
             perplexity = perplexity_result.get("perplexity", 1.0)
             delta_wer = wer_original - wer_variant
             delta_lev = lev_variant - lev_original
-            # ✅ используем константы из config
             perplexity_term = (1.0 - perplexity / 100.0) * PERPLEXITY_WEIGHT
             score = delta_wer + LEV_WEIGHT * delta_lev + perplexity_term
             temp = temperatures[i] if i < len(temperatures) else 0.5
+            ptype = prompt_types[i] if i < len(prompt_types) else "неизвестно"
 
-            print(f"  Вариант #{i+1} (temp={temp:.2f}):")
+            print(f"  Вариант #{i+1} (temp={temp:.2f}, {ptype}):")
             print(f"     └─ WER: {wer_variant:.4f} (Δ={delta_wer:+.4f})")
             print(f"     └─ LevRating: {lev_variant:.4f} (Δ={delta_lev:+.4f})")
             print(f"     └─ Perplexity: {perplexity:.4f}")
             print(f"     └─ Score: {score:.6f}")
 
-            self.logger.info(f"[Ensemble] Вариант #{i+1} (temp={temp:.2f}): WER={wer_variant:.4f} (Δ={delta_wer:+.4f}), Lev={lev_variant:.4f} (Δ={delta_lev:+.4f}), PPL={perplexity:.4f}, Score={score:.6f}")
+            self.logger.info(f"[Ensemble] Вариант #{i+1} ({ptype}, temp={temp:.2f}): WER={wer_variant:.4f} (Δ={delta_wer:+.4f}), Lev={lev_variant:.4f} (Δ={delta_lev:+.4f}), PPL={perplexity:.4f}, Score={score:.6f}")
 
             if score > best_score:
-                best_score, best_variant, best_idx, best_temp, best_prompt = score, variant, i, temp, prompts[i]
+                best_score, best_variant, best_idx, best_temp, best_prompt, best_type = score, variant, i, temp, full_prompts[i], ptype
 
         print("-" * 80)
         if best_score < 0:
@@ -324,7 +413,7 @@ class CorrectorEnsemble(BaseAgent):
             self.logger.warning(f"[Ensemble] Лучший score <0, возвращаем оригинал")
             return self._create_result(original, best_temp, best_prompt, reference, original, wer_original, lev_original)
         else:
-            print(f"  ✅ Лучший вариант #{best_idx+1} (temp={best_temp:.2f}, score={best_score:.6f})")
+            print(f"  ✅ Лучший вариант #{best_idx+1} (temp={best_temp:.2f}, тип={best_type}, score={best_score:.6f})")
             print("-" * 80 + "\n")
             return self._create_result(best_variant, best_temp, best_prompt, reference, original, wer_original, lev_original)
 
@@ -335,19 +424,15 @@ class CorrectorEnsemble(BaseAgent):
         base_prompt = self._ensure_text_placeholder(base_prompt)
         strategies = []
 
+        if USE_FEW_SHOT_PROMPT:
+            strategies.append(("few_shot", self.FEW_SHOT_PROMPT, 0.3))
+        if USE_CHAIN_OF_THOUGHT_PROMPT:
+            strategies.append(("cot", self.CHAIN_OF_THOUGHT_PROMPT, 0.5))
         for temp in LEV_RETRY_TEMPS:
             strategies.append(("temp_retry", base_prompt, temp))
-
         if USE_SAVED_PROMPTS and self.saved_prompts:
             for i, saved in enumerate(self.saved_prompts[:3]):
-                prompt = self._ensure_text_placeholder(saved.get("prompt", base_prompt))
-                strategies.append((f"saved_{i}", prompt, 0.5))
-
-        if USE_FEW_SHOT_PROMPT:
-            strategies.append(("few_shot", self._ensure_text_placeholder(self.FEW_SHOT_PROMPT), 0.5))
-
-        if USE_CHAIN_OF_THOUGHT_PROMPT:
-            strategies.append(("cot", self._ensure_text_placeholder(self.CHAIN_OF_THOUGHT_PROMPT), 0.3))
+                strategies.append((f"saved_{i}", self._ensure_text_placeholder(saved.get("prompt", base_prompt)), 0.5))
 
         print("\n" + "=" * 80)
         print("  🔄 АДАПТИВНАЯ КОРРЕКЦИЯ (delta_Lev < 0)")
@@ -365,7 +450,6 @@ class CorrectorEnsemble(BaseAgent):
                     print(f"     └─ Ответ слишком короткий, пропускаем")
                     attempts += 1
                     continue
-                # ✅ пост-обработка
                 cleaned = TextPostprocessor.clean_text(response.strip())
                 wer_after = self.wer_calc.calculate(reference_text, cleaned) if reference_text else 0.5
                 lev_after = self.lev_calc.calculate(reference_text, cleaned) if reference_text else 0.0
@@ -390,7 +474,6 @@ class CorrectorEnsemble(BaseAgent):
 
     def _create_result(self, corrected_text: str, temperature: float, prompt: str,
                       reference: str, original: str, wer_original: float, lev_original: float) -> Dict[str, Any]:
-        # ✅ пост-обработка финального текста
         cleaned = TextPostprocessor.clean_text(corrected_text)
         if not cleaned or len(cleaned.strip()) < len(original.strip()) * 0.3:
             cleaned = original

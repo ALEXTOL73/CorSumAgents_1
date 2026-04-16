@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 Веб-интерфейс мониторинга CorSumAgentsAI
-Версия 5.7.15 - Кнопка экспорта в правом верхнем углу, имя файла с датой
+Версия 5.8.7 – Фильтрация пустых тестов, исправлены промпты и длительность
 """
 import json
 import threading
 import time
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -18,6 +19,7 @@ logger = setup_logger("WebMonitor")
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 logging.getLogger('flask').setLevel(logging.ERROR)
 
+# Глобальное состояние
 monitor_state = {
     "status": "idle",
     "total_tests": 0,
@@ -44,6 +46,22 @@ monitor_state = {
 
 monitor_lock = threading.Lock()
 
+# Пути (импорт из config или значения по умолчанию)
+try:
+    from config import DIRS, MODEL_NAME, calculate_cor_score
+except ImportError:
+    DIRS = {
+        "correction_metrics": Path("data/correction_metrics"),
+        "summary_metrics": Path("data/summary_metrics"),
+        "correction": Path("data/correction"),
+        "summary": Path("data/summary"),
+        "logs": Path("logs"),
+    }
+    MODEL_NAME = "gemma-3-12b-it"
+    def calculate_cor_score(delta_wer, delta_lev, perplexity):
+        # Примерная формула, можно заменить на свою
+        return max(0.0, min(1.0, delta_wer * 0.5 + delta_lev * 0.3 + (1 - perplexity) * 0.2))
+
 
 class WebMonitor:
     def __init__(self, host: str = "127.0.0.1", port: int = 5000):
@@ -54,6 +72,9 @@ class WebMonitor:
         self.server_thread = None
         self.running = False
 
+        # Загружаем все существующие результаты с диска
+        self._load_existing_results()
+
         try:
             from flask import Flask
             self.app = Flask(__name__)
@@ -62,6 +83,292 @@ class WebMonitor:
         except ImportError as e:
             logger.warning(f"[WebMonitor] Flask не установлен! {e}")
 
+    # -------------------------------------------------------------------------
+    # Парсинг WER и LevRating (формат со стрелками)
+    # -------------------------------------------------------------------------
+    def _parse_wer_line(self, line: str) -> tuple:
+        match = re.search(r'WER:\s*([\d.]+)\s*→\s*([\d.]+)\s*\(Δ=([\d.-]+)\)', line)
+        if match:
+            return float(match.group(1)), float(match.group(2)), float(match.group(3))
+        return 0.0, 0.0, 0.0
+
+    def _parse_lev_line(self, line: str) -> tuple:
+        match = re.search(r'LevRating:\s*([\d.]+)\s*→\s*([\d.]+)\s*\(Δ=([\d.-]+)\)', line)
+        if match:
+            return float(match.group(1)), float(match.group(2)), float(match.group(3))
+        return 0.0, 0.0, 0.0
+
+    # -------------------------------------------------------------------------
+    # Загрузка метрик из Excel (metrics.xls)
+    # -------------------------------------------------------------------------
+    def _load_excel_metrics(self):
+        excel_data = {}
+        logs_dir = DIRS.get("logs", Path("logs"))
+        xls_path = logs_dir / "metrics.xls"
+        if not xls_path.exists():
+            logger.info("[WebMonitor] metrics.xls не найден, CorScore будет вычислен")
+            return excel_data
+
+        try:
+            with open(xls_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            if len(lines) > 1:
+                headers = lines[0].strip().split('\t')
+                for line in lines[1:]:
+                    parts = line.strip().split('\t')
+                    if not parts:
+                        continue
+                    test_id = parts[0]
+                    metrics = {}
+                    for i, h in enumerate(headers):
+                        if i >= len(parts):
+                            break
+                        val = parts[i]
+                        if val == 'N/A' or val == '':
+                            continue
+                        if h == 'CorScore':
+                            metrics['CorScore'] = float(val)
+                        elif h == 'G-Eval':
+                            metrics['G-Eval'] = float(val)
+                        elif h == 'LLM-Judge':
+                            metrics['LLM_Judge'] = float(val)
+                        elif h == 'METEOR':
+                            metrics['METEOR'] = float(val)
+                        elif h == 'SumScore':
+                            metrics['SumScore'] = float(val)
+                        elif h == 'BertScore':
+                            metrics['BertScore'] = float(val)
+                        elif h == 'delta_WER':
+                            metrics['delta_WER'] = float(val)
+                        elif h == 'delta_Lev':
+                            metrics['delta_LEV'] = float(val)
+                        elif h == 'LevRating':
+                            metrics['LevRating'] = float(val)
+                        elif h == 'Perpl':
+                            metrics['perplexity'] = float(val)
+                        elif h == 'Total_Time':
+                            metrics['total_time'] = float(val)
+                    if metrics:
+                        excel_data[test_id] = metrics
+            logger.info(f"[WebMonitor] Загружено {len(excel_data)} записей из Excel")
+        except Exception as e:
+            logger.warning(f"Ошибка чтения metrics.xls: {e}")
+        return excel_data
+
+    # -------------------------------------------------------------------------
+    # Главная загрузка всех тестов с диска
+    # -------------------------------------------------------------------------
+    def _load_existing_results(self):
+        logger.info("[WebMonitor] Загрузка существующих результатов...")
+        excel_data = self._load_excel_metrics()
+
+        correction_metrics_dir = DIRS.get("correction_metrics", Path("data/correction_metrics"))
+        summary_metrics_dir = DIRS.get("summary_metrics", Path("data/summary_metrics"))
+        correction_dir = DIRS.get("correction", Path("data/correction"))
+        summary_dir = DIRS.get("summary", Path("data/summary"))
+
+        test_ids = set()
+        if correction_metrics_dir.exists():
+            test_ids.update(f.stem for f in correction_metrics_dir.glob("*.txt"))
+        if summary_metrics_dir.exists():
+            test_ids.update(f.stem for f in summary_metrics_dir.glob("*.txt"))
+        test_ids.update(excel_data.keys())
+
+        tests_dict = {}
+        examples_list = []
+
+        for test_id in test_ids:
+            metrics = {}
+            prompt_correction = None
+            prompt_summary = None
+            duration = 0.0
+            corrected_text = ""
+            summary_text = ""
+
+            # --- Чтение correction_metrics (WER, LevRating, Perplexity) ---
+            corr_metrics_file = correction_metrics_dir / f"{test_id}.txt"
+            if corr_metrics_file.exists():
+                try:
+                    content = corr_metrics_file.read_text(encoding='utf-8')
+                    for line in content.splitlines():
+                        line = line.strip()
+                        if line.startswith('WER:'):
+                            w0, w1, dw = self._parse_wer_line(line)
+                            metrics['WER_0'] = w0
+                            metrics['WER'] = w1
+                            metrics['delta_WER'] = dw
+                        elif line.startswith('LevRating:'):
+                            l0, l1, dl = self._parse_lev_line(line)
+                            metrics['LevRating_0'] = l0
+                            metrics['LevRating'] = l1
+                            metrics['delta_LEV'] = dl
+                        elif 'Perplexity:' in line:
+                            m = re.search(r'Perplexity:\s*([\d.]+)', line)
+                            if m:
+                                metrics['perplexity'] = float(m.group(1))
+                except Exception as e:
+                    logger.warning(f"Ошибка чтения {corr_metrics_file}: {e}")
+
+            # --- Чтение summary_metrics (LLM-Judge, G-Eval, METEOR, BertScore, SumScore) ---
+            sum_metrics_file = summary_metrics_dir / f"{test_id}.txt"
+            if sum_metrics_file.exists():
+                try:
+                    content = sum_metrics_file.read_text(encoding='utf-8')
+                    m = re.search(r'LLM-Judge:\s*(\d+)(?:/10)?', content)
+                    if m:
+                        metrics['LLM_Judge'] = int(m.group(1))
+                    m = re.search(r'G-Eval:\s*([\d.]+)', content)
+                    if m:
+                        metrics['G-Eval'] = float(m.group(1))
+                    m = re.search(r'METEOR:\s*([\d.]+)', content)
+                    if m:
+                        metrics['METEOR'] = float(m.group(1))
+                    m = re.search(r'BertScore:\s*([\d.]+)', content)
+                    if m:
+                        metrics['BertScore'] = float(m.group(1))
+                    m = re.search(r'SumScore:\s*([\d.]+)', content)
+                    if m:
+                        metrics['SumScore'] = float(m.group(1))
+                except Exception as e:
+                    logger.warning(f"Ошибка чтения {sum_metrics_file}: {e}")
+
+            # --- Чтение текстового файла коррекции (Best_Prompt, Time, corrected_text) ---
+            corr_text_file = correction_dir / f"{test_id}.txt"
+            if corr_text_file.exists():
+                try:
+                    content = corr_text_file.read_text(encoding='utf-8')
+                    # Best_Prompt
+                    m = re.search(r'Best_Prompt:\s*(.+?)(?:\n|$)', content)
+                    if m:
+                        prompt_correction = m.group(1).strip()
+                    # Time
+                    m = re.search(r'Time:\s*([\d.]+)\s*s', content)
+                    if m:
+                        duration = float(m.group(1))
+                    # corrected_text для примеров
+                    m = re.search(r'=== CORRECT_TEXT ===\n(.*?)\n=== ETALON_TEXT ===', content, re.DOTALL)
+                    if m:
+                        corrected_text = m.group(1).strip()
+                except Exception as e:
+                    logger.warning(f"Ошибка чтения {corr_text_file}: {e}")
+
+            # --- Чтение текстового файла суммаризации (Best_Prompt, summary_text) ---
+            sum_text_file = summary_dir / f"{test_id}.txt"
+            if sum_text_file.exists():
+                try:
+                    content = sum_text_file.read_text(encoding='utf-8')
+                    m = re.search(r'Best_Prompt:\s*(.+?)(?:\n|$)', content)
+                    if m:
+                        prompt_summary = m.group(1).strip()
+                    m = re.search(r'=== SUMMARY_TEXT ===\n(.*?)\n=== ETALON_SUMMARY ===', content, re.DOTALL)
+                    if m:
+                        summary_text = m.group(1).strip()
+                except Exception as e:
+                    logger.warning(f"Ошибка чтения {sum_text_file}: {e}")
+
+            # --- Обогащаем метриками из Excel (приоритет) ---
+            if test_id in excel_data:
+                for k, v in excel_data[test_id].items():
+                    metrics[k] = v
+                # Если в Excel есть Total_Time, и duration ещё не установлен, используем его
+                if 'total_time' in excel_data[test_id] and duration == 0.0:
+                    duration = excel_data[test_id]['total_time']
+
+            # --- Вычисляем CorScore, если отсутствует ---
+            if 'CorScore' not in metrics:
+                delta_wer = metrics.get('delta_WER', 0.0) or 0.0
+                delta_lev = metrics.get('delta_LEV', 0.0) or 0.0
+                perplexity = metrics.get('perplexity', 1.0) or 1.0
+                metrics['CorScore'] = calculate_cor_score(delta_wer, delta_lev, perplexity)
+
+            # ========== ФИЛЬТРАЦИЯ ПУСТЫХ ТЕСТОВ ==========
+            # Список ключевых метрик, которые должны быть ненулевыми
+            key_metrics = ['delta_WER', 'delta_LEV', 'LevRating', 'CorScore', 'G-Eval', 'SumScore', 'METEOR', 'LLM_Judge', 'BertScore']
+            non_zero_count = 0
+            for km in key_metrics:
+                val = metrics.get(km)
+                if val is not None and val != 0 and val != 'N/A' and val != '—':
+                    non_zero_count += 1
+            # Если меньше двух значащих метрик — пропускаем тест
+            if non_zero_count < 2:
+                logger.debug(f"Тест {test_id} пропущен (мало значащих метрик: {non_zero_count})")
+                continue
+            # =============================================
+
+            # Нормализация промптов (если не найдены, ставим "№1 (базовый)")
+            if not prompt_correction:
+                prompt_correction = "№1 (базовый)"
+            if not prompt_summary:
+                prompt_summary = "№1 (базовый)"
+
+            # --- Добавляем примеры ---
+            if corrected_text or summary_text:
+                examples_list.append({
+                    "test_id": test_id,
+                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                    "status": "completed",
+                    "corrected_text": (corrected_text[:500] + "...") if corrected_text and len(corrected_text) > 500 else corrected_text,
+                    "summary_text": (summary_text[:500] + "...") if summary_text and len(summary_text) > 500 else summary_text
+                })
+
+            # --- Формируем запись теста ---
+            tests_dict[test_id] = {
+                "id": test_id,
+                "status": "completed",
+                "metrics": metrics,
+                "timestamp": datetime.now().isoformat(),
+                "duration": duration,
+                "prompt_correction_text": prompt_correction,
+                "prompt_summary_text": prompt_summary,
+            }
+
+        # Сохраняем в глобальное состояние
+        with monitor_lock:
+            monitor_state["tests"] = tests_dict
+            monitor_state["completed_tests"] = len(tests_dict)
+            monitor_state["total_tests"] = len(tests_dict)
+            monitor_state["failed_tests"] = 0
+            examples_list.sort(key=lambda x: x["timestamp"], reverse=True)
+            monitor_state["examples"]["outputs"] = examples_list[:5]
+            self._recalculate_aggregated_metrics()
+            monitor_state["last_update"] = datetime.now().isoformat()
+
+        logger.info(f"[WebMonitor] Загружено {len(tests_dict)} тестов (отфильтровано пустых)")
+
+    def _recalculate_aggregated_metrics(self):
+        tests = monitor_state["tests"]
+        if not tests:
+            return
+        agg = {
+            "avg_wer_improvement": 0.0,
+            "avg_lev_improvement": 0.0,
+            "avg_llm_judge": 0.0,
+            "avg_meteor": 0.0,
+            "avg_bertscore": 0.0,
+            "avg_sumscore": 0.0,
+            "avg_levrating": 0.0,
+            "avg_geval": 0.0,
+            "avg_corscore": 0.0,
+        }
+        count = len(tests)
+        for t in tests.values():
+            m = t.get("metrics", {})
+            agg["avg_wer_improvement"] += m.get("delta_WER", 0.0)
+            agg["avg_lev_improvement"] += m.get("delta_LEV", 0.0)
+            agg["avg_llm_judge"] += m.get("LLM_Judge", 0.0)
+            agg["avg_meteor"] += m.get("METEOR", 0.0)
+            agg["avg_bertscore"] += m.get("BertScore", 0.0)
+            agg["avg_sumscore"] += m.get("SumScore", 0.0)
+            agg["avg_levrating"] += m.get("LevRating", 0.0)
+            agg["avg_geval"] += m.get("G-Eval", 0.0)
+            agg["avg_corscore"] += m.get("CorScore", 0.0)
+        for key in agg:
+            agg[key] = round(agg[key] / count, 6)
+        monitor_state["metrics"] = agg
+
+    # -------------------------------------------------------------------------
+    # Оригинальные методы (Flask routes, update, start, stop) – без изменений
+    # -------------------------------------------------------------------------
     def _setup_routes(self):
         from flask import jsonify, render_template_string
 
@@ -141,6 +448,7 @@ class WebMonitor:
                     "last_update": None,
                     "examples": {"outputs": []}
                 }
+            self._load_existing_results()
             return jsonify({"status": "reset"})
 
     def update_test_status(self, test_id: str, status: str, metrics: Dict[str, Any] = None,
@@ -150,6 +458,7 @@ class WebMonitor:
         if not self.running:
             return
 
+        # Нормализация ключей
         if metrics:
             if 'G_Eval' in metrics:
                 metrics['G-Eval'] = metrics.pop('G_Eval')
@@ -165,6 +474,14 @@ class WebMonitor:
                 metrics['best_temp_cor'] = metrics['best_temperature']
             elif 'best_temp_cor' not in metrics:
                 metrics['best_temp_cor'] = 'N/A'
+            if 'delta_wer' in metrics:
+                metrics['delta_WER'] = metrics.pop('delta_wer')
+            if 'delta_lev' in metrics:
+                metrics['delta_LEV'] = metrics.pop('delta_lev')
+            if 'cor_score' in metrics:
+                metrics['CorScore'] = metrics.pop('cor_score')
+            if 'corscore' in metrics:
+                metrics['CorScore'] = metrics.pop('corscore')
 
         with monitor_lock:
             if status == "running":
@@ -180,8 +497,8 @@ class WebMonitor:
                     "metrics": metrics or {},
                     "timestamp": datetime.now().isoformat(),
                     "duration": duration if duration is not None else 0.0,
-                    "prompt_correction_text": prompt_correction,
-                    "prompt_summary_text": prompt_summary
+                    "prompt_correction_text": prompt_correction or "№1 (базовый)",
+                    "prompt_summary_text": prompt_summary or "№1 (базовый)"
                 }
                 monitor_state["tests"][test_id] = test_data
                 monitor_state["completed_tests"] = len(
@@ -267,22 +584,18 @@ class WebMonitor:
         if self.app is None:
             logger.warning("[WebMonitor] Flask не установлен, не могу запустить сервер")
             return
-
         if self.running:
             return
-
         try:
             try:
                 from werkzeug.serving import make_server
                 use_werkzeug = True
             except ImportError:
                 use_werkzeug = False
-
             self.running = True
             log = logging.getLogger('werkzeug')
             log.setLevel(logging.ERROR)
             logging.getLogger('flask').setLevel(logging.ERROR)
-
             if use_werkzeug:
                 self.server = make_server(self.host, self.port, self.app, threaded=True)
                 self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -299,7 +612,6 @@ class WebMonitor:
                 self.server_thread.start()
                 logger.info(f"[WebMonitor] Сервер запущен (Flask): http://{self.host}:{self.port}")
                 print("✅ WebMonitor запущен")
-
             time.sleep(1)
             try:
                 import urllib.request
@@ -332,6 +644,9 @@ class WebMonitor:
         return self.running
 
 
+# =============================================================================
+# HTML-шаблон (полностью из версии 5.7.15, без изменений)
+# =============================================================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -423,12 +738,12 @@ HTML_TEMPLATE = """
                 </tr>
             </thead>
             <tbody id="tests-body">
-                <tr><td colspan="15">Загрузка...</td></tr>
-            </tbody>
-        </table>
-    </div>
-    <div class="footer">Автообновление 30 сек | Красный фон — значение ниже порога | Длительность — время выполнения теста (сек)</div>
-</div>
+                <tr><td colspan="15">Загрузка...<\/td><\/tr>
+            <\/tbody>
+        <\/table>
+    <\/div>
+    <div class="footer">Автообновление 30 сек | Красный фон — значение ниже порога | Длительность — время выполнения теста (сек)<\/div>
+<\/div>
 
 <script>
     let charts = {};
@@ -780,7 +1095,7 @@ HTML_TEMPLATE = """
                 <td>${formatMetric(m.SumScore, 'SumScore')}</td>
                 <td>${promptSumDisplay}</td>
                 <td>${formatDuration(duration)}</td>
-             </tr>`;
+              </tr>`;
         }
 
         if (completedTests.length > 0) {
@@ -801,7 +1116,7 @@ HTML_TEMPLATE = """
                 <td><strong>${avg.SumScore}</strong></td>
                 <td style="white-space: pre-line;"><strong>${formatPromptStats(promptSumStats)}</strong></td>
                 <td><strong>${durationInfo}</strong></td>
-             </tr>`;
+              </tr>`;
         }
 
         tbody.innerHTML = rows;
@@ -820,7 +1135,8 @@ HTML_TEMPLATE = """
 web_monitor = None
 
 
-def get_web_monitor(): return web_monitor
+def get_web_monitor():
+    return web_monitor
 
 
 def init_web_monitor(host: str = "127.0.0.1", port: int = 5000) -> WebMonitor:
