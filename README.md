@@ -10,4 +10,4 @@
 
 ### Установка
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt# CorSumAgents_1
