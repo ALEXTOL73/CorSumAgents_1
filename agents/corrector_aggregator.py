@@ -125,7 +125,7 @@ class CorrectorAggregator(BaseAgent):
             else:
                 prompt_short = f"#{i+1}"
             temp_val = ensemble_temps[i] if i < len(ensemble_temps) else "N/A"
-            print(f"  │ {i+1} │ {wer_v:8.4f}   │ {lev_v:8.4f}   │ {ppl:8.4f}      │ {delta_wer:+6.4f}   │ {delta_lev:+6.4f} │{score:7.3f} │ {prompt_short:10}    │{temp_val:4}   │")
+            print(f"  │ {i+1} │ {wer_v:8.4f}  │ {lev_v:8.4f} │ {ppl:8.4f}    │ {delta_wer:+6.4f}   │ {delta_lev:+6.4f} │{score:7.3f} │ {prompt_short:10}  │{temp_val:4}   │")
 
         print("  └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘")
         print()
