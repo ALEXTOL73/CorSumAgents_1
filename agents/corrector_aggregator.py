@@ -4,12 +4,13 @@
 Версия 5.0.9 - Получение типов промптов и температур из state
 """
 from typing import Dict, Any, List
+
 from agents.base_agent import BaseAgent
-from utils.lmstudio_client import LMStudioClient
-from metrics.wer_calculator import WERCalculator
+from config import MODEL_NAME, LEV_WEIGHT, PERPLEXITY_WEIGHT, LANGUAGE
 from metrics.levenstein_calculator import LevenshteinCalculator
 from metrics.perplexity_calculator import PerplexityCalculator
-from config import MODEL_NAME, LEV_WEIGHT, PERPLEXITY_WEIGHT
+from metrics.wer_calculator import WERCalculator
+from utils.lmstudio_client import LMStudioClient
 
 
 class CorrectorAggregator(BaseAgent):
@@ -38,7 +39,7 @@ class CorrectorAggregator(BaseAgent):
         super().__init__(client, "CorrectorAggregator")
         self.wer_calc = WERCalculator()
         self.lev_calc = LevenshteinCalculator()
-        self.perplexity_calc = PerplexityCalculator(language="ru")
+        self.perplexity_calc = PerplexityCalculator(language=LANGUAGE.lower())
 
     def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
         print("\n" + "=" * 80)
@@ -74,19 +75,33 @@ class CorrectorAggregator(BaseAgent):
         wer_original = self.wer_calc.calculate(reference_text, input_text) if reference_text else 0.5
         lev_original = self.lev_calc.calculate(reference_text, input_text) if reference_text else 0.0
 
-        print("  ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐")
-        print("  │                              ОЦЕНКА ВАРИАНТОВ КОРРЕКЦИИ                                          │")
-        print("  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤")
-        print("  │ № │     WER     │  LevRating  │ Perplexity │   ΔWER   │  ΔLev   │  Score  │   Промпт    │ Temp   │")
-        print("  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤")
+        print("  ┌─────────────────────────────────────────────────────────────────────────────────────────────┐")
+        print("  │                              ОЦЕНКА ВАРИАНТОВ КОРРЕКЦИИ                                     │")
+        print("  ├─────────────────────────────────────────────────────────────────────────────────────────────┤")
+        print("  │ № │     WER   │ LevRating │ Perplexity │   ΔWER   │  ΔLev   │  Score │   Промпт    │ Temp   │")
+        print("  ├─────────────────────────────────────────────────────────────────────────────────────────────┤")
 
         scores = []
         for i, variant in enumerate(ensemble_outputs):
             if not variant:
                 scores.append(-1e9)
-                prompt_short = ensemble_prompts[i][:12] if i < len(ensemble_prompts) else "N/A"
+                prompt_type = ensemble_prompts[i] if i < len(ensemble_prompts) else "N/A"
+                # ✅ Определяем номер ТИПА промпта (1-5), не индекс варианта
+                if "few_shot" in prompt_type.lower():
+                    prompt_short = "#2 (FS)"
+                elif "cot" in prompt_type.lower() or "chain" in prompt_type.lower():
+                    prompt_short = "#3 (CoT)"
+                elif "saved" in prompt_type.lower():
+                    prompt_short = "#4 (Mem)"
+                elif "self-consistency" in prompt_type.lower():
+                    prompt_short = "#5 (SC)"
+                elif "base" in prompt_type.lower() or prompt_type == "N/A":
+                    prompt_short = "#1 (base)"
+                else:
+                    prompt_short = f"#{i+1}"
                 temp_val = ensemble_temps[i] if i < len(ensemble_temps) else "N/A"
-                print(f"  │ {i+1} │   пустой    │             │            │         │         │         │ {prompt_short:10} │{temp_val:4} │")
+
+                print(f"  │ {i+1} │   пустой       │                 │             │          │         │         │ {prompt_short:10} │{temp_val:4} │")
                 continue
             wer_v = self.wer_calc.calculate(reference_text, variant) if reference_text else 0.5
             lev_v = self.lev_calc.calculate(reference_text, variant) if reference_text else 0.0
@@ -95,11 +110,24 @@ class CorrectorAggregator(BaseAgent):
             delta_lev = lev_v - lev_original
             score = delta_wer + LEV_WEIGHT * delta_lev + (1.0 - ppl) * PERPLEXITY_WEIGHT
             scores.append(score)
-            prompt_short = ensemble_prompts[i][:12] if i < len(ensemble_prompts) else "N/A"
+            # ✅ Определяем номер ТИПА промпта (1-5), не индекс варианта
+            prompt_type = ensemble_prompts[i] if i < len(ensemble_prompts) else "N/A"
+            if "few_shot" in prompt_type.lower():
+                prompt_short = "#2 (FS)"
+            elif "cot" in prompt_type.lower() or "chain" in prompt_type.lower():
+                prompt_short = "#3 (CoT)"
+            elif "saved" in prompt_type.lower():
+                prompt_short = "#4 (Mem)"
+            elif "self-consistency" in prompt_type.lower():
+                prompt_short = "#5 (SC)"
+            elif "base" in prompt_type.lower() or prompt_type == "N/A":
+                prompt_short = "#1 (base)"
+            else:
+                prompt_short = f"#{i+1}"
             temp_val = ensemble_temps[i] if i < len(ensemble_temps) else "N/A"
-            print(f"  │ {i+1} │ {wer_v:8.4f}│ {lev_v:8.4f}  │ {ppl:8.4f} │ {delta_wer:+6.4f} │ {delta_lev:+6.4f} │{score:7.3f} │ {prompt_short:10}  │{temp_val:4}│")
+            print(f"  │ {i+1} │ {wer_v:8.4f}   │ {lev_v:8.4f}   │ {ppl:8.4f}      │ {delta_wer:+6.4f}   │ {delta_lev:+6.4f} │{score:7.3f} │ {prompt_short:10}    │{temp_val:4}   │")
 
-        print("  └──────────────────────────────────────────────────────────────────────────────────────────────────┘")
+        print("  └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘")
         print()
 
         best_idx = max(range(len(scores)), key=lambda i: scores[i])

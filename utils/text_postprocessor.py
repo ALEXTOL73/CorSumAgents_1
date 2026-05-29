@@ -2,14 +2,20 @@
 Пост-процессор для очистки и нормализации текстов, сгенерированных LLM
 Версия 1.1 - Добавлены: словарные исправления, нормализация чисел, ужесточение пробелов
 """
-import re
 import json
+import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from utils.logger import setup_logger
 
 logger = setup_logger("TextPostprocessor", "text_postprocessor")
+
+# Импортируем DATA_LANG_DIR из config
+try:
+    from config import DATA_LANG_DIR
+except ImportError:
+    DATA_LANG_DIR = "RUS"  # fallback
 
 
 class TextPostprocessor:
@@ -39,25 +45,34 @@ class TextPostprocessor:
 
     # Кэш для словаря исправлений
     _fixes_cache: Optional[Dict[str, str]] = None
-    _fixes_file_path = Path("data/common_fixes.json")
+    _fixes_file_path: Optional[Path] = None  # Будет установлен при первом использовании
+
+    @classmethod
+    def _get_fixes_file_path(cls) -> Path:
+        """Получить путь к файлу исправлений с учетом языка"""
+        if cls._fixes_file_path is None:
+            cls._fixes_file_path = Path("data") / DATA_LANG_DIR / "common_fixes.json"
+        return cls._fixes_file_path
 
     @classmethod
     def _load_fixes(cls) -> Dict[str, str]:
         """Загрузка словаря исправлений из JSON-файла (один раз)"""
         if cls._fixes_cache is not None:
             return cls._fixes_cache
-        if not cls._fixes_file_path.exists():
-            logger.warning(f"Файл словаря исправлений не найден: {cls._fixes_file_path}")
+        
+        fixes_path = cls._get_fixes_file_path()
+        if not fixes_path.exists():
+            logger.warning(f"Файл словаря исправлений не найден: {fixes_path}")
             cls._fixes_cache = {}
             return {}
         try:
-            with open(cls._fixes_file_path, "r", encoding="utf-8") as f:
+            with open(fixes_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict):
                 cls._fixes_cache = data
-                logger.info(f"Загружено {len(cls._fixes_cache)} словарных исправлений")
+                logger.info(f"Загружено {len(cls._fixes_cache)} словарных исправлений из {fixes_path}")
             else:
-                logger.warning("Неверный формат common_fixes.json (ожидался словарь)")
+                logger.warning(f"Неверный формат {fixes_path} (ожидался словарь)")
                 cls._fixes_cache = {}
         except Exception as e:
             logger.error(f"Ошибка загрузки словаря исправлений: {e}")

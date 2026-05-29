@@ -13,10 +13,12 @@
 - ✅ ПОНИЖЕН порог схожести для более широкого выбора
 """
 from typing import Dict, Any, List, Optional
+
 from agents.base_agent import BaseAgent
-from utils.lmstudio_client import LMStudioClient
+from config import SUMMARY_DYNAMIC_FEW_SHOT_ENABLED, SUMMARY_MAX_FEW_SHOT_EXAMPLES, SUMMARY_FEW_SHOT_LENGTH_RATIO, \
+    LANGUAGE
 from utils.agent_memory import AgentMemory
-from config import ENSEMBLE_SIZE, SUMMARY_DYNAMIC_FEW_SHOT_ENABLED, SUMMARY_MAX_FEW_SHOT_EXAMPLES, SUMMARY_FEW_SHOT_LENGTH_RATIO
+from utils.lmstudio_client import LMStudioClient
 
 # Для семантического поиска (опционально)
 try:
@@ -114,10 +116,9 @@ class SummarizationPromptGenerator(BaseAgent):
         input_text = state.get("corrected_text", "") or state.get("input_text", "")
         domain = state.get("summary_domain", "general")
 
-        # Определение языка
-        has_cyrillic = any(ord(c) > 127 for c in str(input_text))
-        language = "русском" if has_cyrillic else "английском"
-        language_code = "ru" if has_cyrillic else "en"
+        # Определение языка из config
+        language = "русском" if LANGUAGE.lower() == "ru" else "английском"
+        language_code = "ru" if LANGUAGE.lower() == "ru" else "en"
 
         # ✅ ДИНАМИЧЕСКИЕ ПРИМЕРЫ ИЗ ПАМЯТИ (с семантическим поиском)
         examples_text = ""

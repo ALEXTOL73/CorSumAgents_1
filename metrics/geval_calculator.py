@@ -12,11 +12,12 @@
 import json
 import re
 import time
-import logging
-from typing import Dict, Any, Optional
 from dataclasses import dataclass
-from utils.logger import setup_logger
+from typing import Dict, Any, Optional
+
+from config import LANGUAGE
 from utils.lmstudio_client import LMStudioClient
+from utils.logger import setup_logger
 
 logger = setup_logger("GEvalCalculator", "geval_calculator")
 
@@ -185,14 +186,18 @@ class GEvalCalculator:
                 processing_time=time.time() - start_time
             )
 
-        # Формирование промпта
-        system_prompt = """Ты — эксперт по оценке качества суммаризации текстов.
+        # Формирование промпта с учетом языка
+        # ✅ Используем LANGUAGE из config
+        is_russian = LANGUAGE.lower() == 'ru'
+        
+        if is_russian:
+            system_prompt = """Ты — эксперт по оценке качества суммаризации текстов.
 Оцени суммаризацию по критериям от 0 до 1.
 Выведи JSON с оценками."""
 
-        reference_text = reference if reference else "Эталон не предоставлен"
+            reference_text = reference if reference else "Эталон не предоставлен"
 
-        user_prompt = f"""Оцени суммаризацию по критериям:
+            user_prompt = f"""Оцени суммаризацию по критериям:
 
 Критерии:
 - COHERENCE (связность) - логичность изложения, плавность перехода между идеями
@@ -218,6 +223,41 @@ class GEvalCalculator:
     "relevance": 0.XX,
     "conciseness": 0.XX,
     "explanation": "обоснование оценок"
+}}
+"""
+        else:
+            system_prompt = """You are an expert in text summarization quality assessment.
+Evaluate the summary on criteria from 0 to 1.
+Output JSON with scores."""
+
+            reference_text = reference if reference else "Golden reference not provided"
+
+            user_prompt = f"""Evaluate the summary based on criteria:
+
+Criteria:
+- COHERENCE - logical flow, smooth transitions between ideas
+- CONSISTENCY - alignment with source text, no contradictions
+- FLUENCY - grammatical correctness, natural language
+- RELEVANCE - retention of key information, filtering of次要 content
+- CONCISENESS - no redundancy, brevity of expression
+
+ORIGINAL TEXT:
+{original_text[:4000]}
+
+SUMMARY:
+{summary[:2000]}
+
+GOLDEN SUMMARY:
+{reference_text[:2000]}
+
+Output JSON:
+{{
+    "coherence": 0.XX,
+    "consistency": 0.XX,
+    "fluency": 0.XX,
+    "relevance": 0.XX,
+    "conciseness": 0.XX,
+    "explanation": "justification for scores"
 }}
 """
 
@@ -283,10 +323,14 @@ class GEvalCalculator:
             GEvalResult с оценками по всем критериям
         """
         start_time = time.time()
+        
+        # ✅ Используем LANGUAGE из config
+        is_russian = LANGUAGE.lower() == 'ru'
 
-        system_prompt = "Ты — эксперт по сравнению суммаризаций."
+        if is_russian:
+            system_prompt = "Ты — эксперт по сравнению суммаризаций."
 
-        user_prompt = f"""Сравни суммаризацию с эталоном.
+            user_prompt = f"""Сравни суммаризацию с эталоном.
 
 ЭТАЛОН:
 {golden[:2000]}
@@ -302,6 +346,27 @@ class GEvalCalculator:
     "relevance": 0.XX,
     "conciseness": 0.XX,
     "explanation": "обоснование оценок"
+}}
+"""
+        else:
+            system_prompt = "You are an expert in comparing summaries."
+
+            user_prompt = f"""Compare the summary with the golden reference.
+
+GOLDEN REFERENCE:
+{golden[:2000]}
+
+SUMMARY:
+{summary[:2000]}
+
+Evaluate on criteria from 0 to 1. Output JSON:
+{{
+    "coherence": 0.XX,
+    "consistency": 0.XX,
+    "fluency": 0.XX,
+    "relevance": 0.XX,
+    "conciseness": 0.XX,
+    "explanation": "justification for scores"
 }}
 """
 

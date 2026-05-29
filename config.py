@@ -6,6 +6,13 @@ import os
 from pathlib import Path
 
 # =============================================================================
+# 🌐 GLOBAL LANGUAGE CONFIGURATION
+# =============================================================================
+# ВАЖНО: 'ru' = русский (папка data/RUS/), 'en' = english (папка data/ENG/)
+LANGUAGE = 'en'  # 'ru' for Russian → data/RUS/, 'en' for English → data/ENG/
+DATA_LANG_DIR = 'RUS' if LANGUAGE.lower() == 'ru' else 'ENG'
+
+# =============================================================================
 # 🔹 Обработка Файлов
 # =============================================================================
 SKIP_PROCESSED = 1       # 1 - Пропустить обработанные файлы
@@ -23,7 +30,7 @@ LM_STUDIO_MAX_TOKENS = 4096
 # ⭐ ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА
 # =============================================================================
 PARALLEL_TESTS_ENABLED = True
-PARALLEL_TESTS_MAX_WORKERS = 5
+PARALLEL_TESTS_MAX_WORKERS = 4
 
 # =============================================================================
 # ⭐ РАННИЙ ОСТАНОВ (EARLY STOPPING) ДЛЯ АНСАМБЛЕЙ
@@ -36,10 +43,10 @@ EARLY_STOP_SUMMARY_THRESHOLD = 0.90
 # =============================================================================
 # 🔹 Настройки Агентов
 # =============================================================================
-ENSEMBLE_SIZE = 2
+ENSEMBLE_SIZE = 3
 MAX_RETRIES = 1
 TEMPERATURE_RANGE = (0.1, 0.8)
-MAX_CROSS_VALIDATION_ITERATIONS = 5
+MAX_CROSS_VALIDATION_ITERATIONS = 1
 CROSS_VALIDATION_SIMILARITY_THRESHOLD = 0.4
 MAX_TOTAL_ITERATIONS = 20
 
@@ -53,7 +60,7 @@ MIN_SEMANTIC_SIMILARITY = 0.5
 MIN_METEOR_SCORE = 0.3
 MIN_PERPLEXITY = 0.7
 
-REFLECTION_ENABLED = False   # ВЫКЛЮЧИЛ ДЛЯ УСКОРЕНИЯ
+REFLECTION_ENABLED = True   # ВЫКЛЮЧИЛ ДЛЯ УСКОРЕНИЯ
 REFLECTION_THRESHOLD_SUMSCORE = 0.55
 REFLECTION_THRESHOLD_CORSCORE = 0.4
 
@@ -68,8 +75,8 @@ PERPLEXITY_WEIGHT = 0.3
 ADAPTIVE_CORRECTION_ENABLED = True
 MAX_ADAPTIVE_ATTEMPTS = 1
 MAX_LEV_RETRY_ATTEMPTS = 1
-TEMP_RETRY_TEMPS = [0.1, 0.5, 0.9]
-LEV_RETRY_TEMPS = TEMP_RETRY_TEMPS
+TEMP_RETRY_TEMPS = [0.1, 0.3]
+# ✅ LEV_RETRY_TEMPS будет установлен ниже через os.getenv
 DELTA_LEV_THRESHOLD = 0.02
 USE_SAVED_PROMPTS = True
 USE_FEW_SHOT_PROMPT = True
@@ -79,18 +86,18 @@ USE_CHAIN_OF_THOUGHT_PROMPT = True
 # ⭐ ДИНАМИЧЕСКИЕ ТЕМПЕРАТУРЫ И SELF-CONSISTENCY
 # =============================================================================
 DYNAMIC_TEMPERATURES_ENABLED = True
-SELF_CONSISTENCY_ENABLED = False   # ИСПРАВИЛ ДЛЯ УСКОРЕНИЯ
-SELF_CONSISTENCY_EXTRA_COUNT = 2
+SELF_CONSISTENCY_ENABLED = True   # ИСПРАВИЛ ДЛЯ УСКОРЕНИЯ
+SELF_CONSISTENCY_EXTRA_COUNT = 1
 ERROR_PROFILE_ENABLED = True
 
 # =============================================================================
 # ⭐ НАСТРОЙКИ СУММАРИЗАЦИИ
 # =============================================================================
-SUMMARY_ENSEMBLE_SIZE = 2
-SUMMARY_TEMPERATURE_RANGE = (0.2, 1.9)
+SUMMARY_ENSEMBLE_SIZE = 3
+SUMMARY_TEMPERATURE_RANGE = (0.2, 1.0)
 SUMMARY_ADAPTIVE_ENABLED = True
 SUMMARY_MAX_RETRY_ATTEMPTS = 1
-SUMMARY_RETRY_TEMPS = [0.3, 0.6, 1.0]
+SUMMARY_RETRY_TEMPS = [0.4, 0.6, 1.0]
 SUMMARY_USE_SAVED_PROMPTS = True
 SUMMARY_USE_FEW_SHOT = True
 SUMMARY_USE_CHAIN_OF_THOUGHT = True
@@ -189,7 +196,6 @@ MEMORY_AUTO_SAVE_INTERVAL = 10
 # =============================================================================
 # ⭐ САМОРЕФЛЕКСИЯ (REFLECTION)
 # =============================================================================
-REFLECTION_ENABLED = True
 REFLECTION_MIN_SCORE = 7               # Минимальная оценка для принятия без повторной генерации
 REFLECTION_MAX_ATTEMPTS = 2            # Максимум попыток рефлексии для одного теста
 REFLECTION_TEMPERATURE = 0.2           # Температура для запроса рефлексии
@@ -314,15 +320,16 @@ TEXT_PREPROCESSING = {
 # =============================================================================
 DIRS = {
     "data": BASE_DIR / "data",
-    "incorrect_texts": BASE_DIR / "data" / "Incorrect_texts",
-    "etalon_texts": BASE_DIR / "data" / "etalon_texts",
-    "etalon_summaries": BASE_DIR / "data" / "etalon_summaries",
-    "test_cases": BASE_DIR / "data" / "test_cases",
-    "correction": BASE_DIR / "data" / "correction",
-    "summary": BASE_DIR / "data" / "summary",
-    "correction_metrics": BASE_DIR / "data" / "correction_metrics",
-    "summary_metrics": BASE_DIR / "data" / "summary_metrics",
-    "memory": BASE_DIR / "data" / "memory",
+    "incorrect_texts": BASE_DIR / "data" / DATA_LANG_DIR / "Incorrect_texts",
+    "etalon_texts": BASE_DIR / "data" / DATA_LANG_DIR / "etalon_texts",
+    "etalon_summaries": BASE_DIR / "data" / DATA_LANG_DIR / "etalon_summaries",
+    "test_cases": BASE_DIR / "data" / DATA_LANG_DIR / "test_cases",
+    "correction": BASE_DIR / "data" / DATA_LANG_DIR / "correction",
+    "summary": BASE_DIR / "data" / DATA_LANG_DIR / "summary",
+    "correction_metrics": BASE_DIR / "data" / DATA_LANG_DIR / "correction_metrics",
+    "summary_metrics": BASE_DIR / "data" / DATA_LANG_DIR / "summary_metrics",
+    "memory": BASE_DIR / "data" / DATA_LANG_DIR / "memory",
+    "metrics": BASE_DIR / "data" / DATA_LANG_DIR / "metrics",  # ✅ Папка для XLS метрик
     "logs": BASE_DIR / "logs",
     "agent_logs": BASE_DIR / "logs" / "agent_logs",
     "documentation": BASE_DIR / "documentation"
@@ -346,7 +353,7 @@ LOG_CONFIG = {
 # 📤 FILE OUTPUT CONFIGURATION
 # =============================================================================
 FILE_OUTPUT_CONFIG = {
-    "encoding": "utf-8",
+    "encoding": "cp1251",  # windows-1251 для совместимости
     "sentence_per_line": True,
     "include_prompts": True,
     "include_ensemble_outputs": False,
@@ -478,12 +485,32 @@ def validate_config() -> list:
 def should_skip_file(test_id: str, task_type: str) -> bool:
     if SKIP_PROCESSED == 0:
         return False
-    if task_type in ["correction", "combined"]:
-        if (DIRS["correction"] / f"{test_id}.txt").exists() and (DIRS["correction_metrics"] / f"{test_id}.txt").exists():
+    
+    # Для combined: проверяем И correction И summary - ОБЕ должны быть полностью готовы
+    if task_type == "combined":
+        corr_exists = (DIRS["correction"] / f"{test_id}.txt").exists()
+        corr_metrics_exists = (DIRS["correction_metrics"] / f"{test_id}.txt").exists()
+        sum_exists = (DIRS["summary"] / f"{test_id}.txt").exists()
+        sum_metrics_exists = (DIRS["summary_metrics"] / f"{test_id}.txt").exists()
+        # Пропускаем ТОЛЬКО если ВСЕ 4 файла существуют
+        if corr_exists and corr_metrics_exists and sum_exists and sum_metrics_exists:
             return True
-    if task_type in ["summary", "combined"]:
-        if (DIRS["summary"] / f"{test_id}.txt").exists() and (DIRS["summary_metrics"] / f"{test_id}.txt").exists():
+        return False  # Если хоть чего-то нет - обрабатываем
+    
+    # Для только коррекции
+    if task_type == "correction":
+        corr_exists = (DIRS["correction"] / f"{test_id}.txt").exists()
+        corr_metrics_exists = (DIRS["correction_metrics"] / f"{test_id}.txt").exists()
+        if corr_exists and corr_metrics_exists:
             return True
+    
+    # Для только суммаризации
+    if task_type == "summary":
+        sum_exists = (DIRS["summary"] / f"{test_id}.txt").exists()
+        sum_metrics_exists = (DIRS["summary_metrics"] / f"{test_id}.txt").exists()
+        if sum_exists and sum_metrics_exists:
+            return True
+    
     return False
 
 def get_processed_files(directory: Path) -> set:

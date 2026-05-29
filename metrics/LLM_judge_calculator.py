@@ -9,8 +9,10 @@
 - Детальное логирование
 """
 from typing import Dict, Any
-from utils.logger import setup_logger
+
+from config import LANGUAGE
 from utils.lmstudio_client import LMStudioClient
+from utils.logger import setup_logger
 
 logger = setup_logger("LLMJudgeCalculator", "llm_judge_calculator")
 
@@ -61,12 +63,16 @@ class LLMJudgeCalculator:
 
         if not reference:
             logger.warning("[LLM-Judge] Пустой эталон, используем только оригинал")
-            reference = "Эталон не предоставлен"
+            reference = "Эталон не предоставлен" if LANGUAGE.lower() == 'ru' else "Golden reference not provided"
 
         # Обрезаем длинные тексты для экономии токенов
         original_trimmed = original[:500] + ('...' if len(original) > 500 else '')
-
-        prompt = f"""
+        
+        # ✅ Формируем промпт с учетом языка
+        is_russian = LANGUAGE.lower() == 'ru'
+        
+        if is_russian:
+            prompt = f"""
 Ты - профессиональный судья качества суммаризации текстов.
 
 ИСХОДНЫЙ ТЕКСТ:
@@ -87,7 +93,30 @@ class LLMJudgeCalculator:
 Верни ответ ТОЛЬКО в формате JSON:
 {{"score": <число 1-10>, "explanation": "<краткое объяснение 2-3 предложения>"}}
 """
-        system_prompt = "Отвечай ТОЛЬКО в формате JSON без дополнительного текста"
+            system_prompt = "Отвечай ТОЛЬКО в формате JSON без дополнительного текста"
+        else:
+            prompt = f"""
+You are a professional text summarization quality judge.
+
+ORIGINAL TEXT:
+{original_trimmed}
+
+SUMMARY:
+{summary}
+
+GOLDEN SUMMARY:
+{reference}
+
+Evaluation criteria (1-10):
+1-3: Incoherent text, loss of meaning
+4-6: Partial meaning transfer, has errors
+7-8: Good meaning transfer, minor flaws
+9-10: Ideal summary, full match with golden reference
+
+Return answer ONLY in JSON format:
+{{"score": <number 1-10>, "explanation": "<brief explanation 2-3 sentences>"}}
+"""
+            system_prompt = "Respond ONLY in JSON format without additional text"
 
         # ✅ ИСПРАВЛЕНИЕ v3.6: Увеличиваем max_tokens для полного ответа
         response = self.client.generate_json(

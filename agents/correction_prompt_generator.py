@@ -2,12 +2,12 @@
 Агент генерации промптов для коррекции текста
 Версия 5.6.0 - Семантический поиск few-shot примеров
 """
-import random
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Optional
+
 from agents.base_agent import BaseAgent
-from utils.lmstudio_client import LMStudioClient
+from config import DYNAMIC_FEW_SHOT_ENABLED, MAX_FEW_SHOT_EXAMPLES, FEW_SHOT_SIMILARITY_THRESHOLD, LANGUAGE
 from utils.agent_memory import AgentMemory
-from config import DYNAMIC_FEW_SHOT_ENABLED, MAX_FEW_SHOT_EXAMPLES, FEW_SHOT_SIMILARITY_THRESHOLD
+from utils.lmstudio_client import LMStudioClient
 
 
 class CorrectionPromptGenerator(BaseAgent):
@@ -71,9 +71,8 @@ Error: "didnt came" (grammar) → correction: "didn't come" """,
     def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
         self.log_execution("Генерация промптов для коррекции")
         input_text = state.get("input_text", "")
-        has_cyrillic = any(ord(c) > 127 for c in str(input_text))
-        language = "русском" if has_cyrillic else "английском"
-        language_code = "ru" if has_cyrillic else "en"
+        language = "русском" if LANGUAGE.lower() == "ru" else "английском"
+        language_code = "ru" if LANGUAGE.lower() == "ru" else "en"
         domain = state.get("domain", "general")
 
         # ✅ Динамические примеры из памяти (семантический поиск)

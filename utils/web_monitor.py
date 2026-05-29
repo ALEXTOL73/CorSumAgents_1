@@ -3,14 +3,13 @@
 Веб-интерфейс мониторинга CorSumAgentsAI
 Версия 5.8.7 – Фильтрация пустых тестов, исправлены промпты и длительность
 """
-import json
-import threading
-import time
 import logging
 import re
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from utils.logger import setup_logger
 
@@ -48,7 +47,7 @@ monitor_lock = threading.Lock()
 
 # Пути (импорт из config или значения по умолчанию)
 try:
-    from config import DIRS, MODEL_NAME, calculate_cor_score
+    from config import DIRS, MODEL_NAME, calculate_cor_score, DATA_LANG_DIR
 except ImportError:
     DIRS = {
         "correction_metrics": Path("data/correction_metrics"),
@@ -56,8 +55,10 @@ except ImportError:
         "correction": Path("data/correction"),
         "summary": Path("data/summary"),
         "logs": Path("logs"),
+        "metrics": Path("data/metrics"),
     }
     MODEL_NAME = "gemma-3-12b-it"
+    DATA_LANG_DIR = "RUS"  # fallback
     def calculate_cor_score(delta_wer, delta_lev, perplexity):
         # Примерная формула, можно заменить на свою
         return max(0.0, min(1.0, delta_wer * 0.5 + delta_lev * 0.3 + (1 - perplexity) * 0.2))
@@ -87,13 +88,19 @@ class WebMonitor:
     # Парсинг WER и LevRating (формат со стрелками)
     # -------------------------------------------------------------------------
     def _parse_wer_line(self, line: str) -> tuple:
-        match = re.search(r'WER:\s*([\d.]+)\s*→\s*([\d.]+)\s*\(Δ=([\d.-]+)\)', line)
+        # ✅ Поддержка форматов: 
+        #   WER: 0.276 → 0.105 (Δ=0.171) - правильный utf-8
+        #   WER: 0.276 ? 0.105 (?=0.171) - encoding corrupted
+        match = re.search(r'WER:\s*([\d.]+)\s+[^\s]+\s+([\d.]+)\s+\([Δ?]?=([\d.-]+)\)', line)
         if match:
             return float(match.group(1)), float(match.group(2)), float(match.group(3))
         return 0.0, 0.0, 0.0
 
     def _parse_lev_line(self, line: str) -> tuple:
-        match = re.search(r'LevRating:\s*([\d.]+)\s*→\s*([\d.]+)\s*\(Δ=([\d.-]+)\)', line)
+        # ✅ Поддержка форматов:
+        #   LevRating: 0.935 → 0.963 (Δ=0.028) - правильный utf-8
+        #   LevRating: 0.935 ? 0.963 (?=0.028) - encoding corrupted
+        match = re.search(r'LevRating:\s*([\d.]+)\s+[^\s]+\s+([\d.]+)\s+\([Δ?]?=([\d.-]+)\)', line)
         if match:
             return float(match.group(1)), float(match.group(2)), float(match.group(3))
         return 0.0, 0.0, 0.0
@@ -103,15 +110,21 @@ class WebMonitor:
     # -------------------------------------------------------------------------
     def _load_excel_metrics(self):
         excel_data = {}
-        logs_dir = DIRS.get("logs", Path("logs"))
-        xls_path = logs_dir / "metrics.xls"
+        # ✅ Читаем metrics.xls из data/{DATA_LANG_DIR}/metrics/
+        metrics_dir = DIRS.get("metrics", Path("data") / DATA_LANG_DIR / "metrics")
+        xls_path = metrics_dir / "metrics.xls"
         if not xls_path.exists():
-            logger.info("[WebMonitor] metrics.xls не найден, CorScore будет вычислен")
+            logger.info(f"[WebMonitor] metrics.xls не найден в {metrics_dir}, CorScore будет вычислен")
             return excel_data
 
         try:
-            with open(xls_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+            # Пробуем cp1251 сначала, потом utf-8
+            try:
+                with open(xls_path, 'r', encoding='cp1251') as f:
+                    lines = f.readlines()
+            except UnicodeDecodeError:
+                with open(xls_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
             if len(lines) > 1:
                 headers = lines[0].strip().split('\t')
                 for line in lines[1:]:
@@ -167,6 +180,11 @@ class WebMonitor:
         correction_dir = DIRS.get("correction", Path("data/correction"))
         summary_dir = DIRS.get("summary", Path("data/summary"))
 
+        logger.info(f"[WebMonitor] correction_metrics_dir: {correction_metrics_dir}")
+        logger.info(f"[WebMonitor] summary_metrics_dir: {summary_metrics_dir}")
+        logger.info(f"[WebMonitor] correction_dir: {correction_dir}")
+        logger.info(f"[WebMonitor] summary_dir: {summary_dir}")
+
         test_ids = set()
         if correction_metrics_dir.exists():
             test_ids.update(f.stem for f in correction_metrics_dir.glob("*.txt"))
@@ -174,10 +192,17 @@ class WebMonitor:
             test_ids.update(f.stem for f in summary_metrics_dir.glob("*.txt"))
         test_ids.update(excel_data.keys())
 
+        # ✅ Сортируем test_ids с учётом числового порядка (natural sort)
+        def natural_sort_key(s):
+            """Сортировка: 1_, 2_, 10_, 20_, 100_ вместо 1_, 10_, 100_, 2_, 20_"""
+            return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
+        
+        sorted_test_ids = sorted(test_ids, key=natural_sort_key)
+
         tests_dict = {}
         examples_list = []
 
-        for test_id in test_ids:
+        for test_id in sorted_test_ids:
             metrics = {}
             prompt_correction = None
             prompt_summary = None
@@ -189,7 +214,11 @@ class WebMonitor:
             corr_metrics_file = correction_metrics_dir / f"{test_id}.txt"
             if corr_metrics_file.exists():
                 try:
-                    content = corr_metrics_file.read_text(encoding='utf-8')
+                    # Пробуем cp1251 сначала, потом utf-8
+                    try:
+                        content = corr_metrics_file.read_text(encoding='cp1251')
+                    except UnicodeDecodeError:
+                        content = corr_metrics_file.read_text(encoding='utf-8')
                     for line in content.splitlines():
                         line = line.strip()
                         if line.startswith('WER:'):
@@ -213,7 +242,11 @@ class WebMonitor:
             sum_metrics_file = summary_metrics_dir / f"{test_id}.txt"
             if sum_metrics_file.exists():
                 try:
-                    content = sum_metrics_file.read_text(encoding='utf-8')
+                    # Пробуем cp1251 сначала, потом utf-8
+                    try:
+                        content = sum_metrics_file.read_text(encoding='cp1251')
+                    except UnicodeDecodeError:
+                        content = sum_metrics_file.read_text(encoding='utf-8')
                     m = re.search(r'LLM-Judge:\s*(\d+)(?:/10)?', content)
                     if m:
                         metrics['LLM_Judge'] = int(m.group(1))
@@ -236,7 +269,11 @@ class WebMonitor:
             corr_text_file = correction_dir / f"{test_id}.txt"
             if corr_text_file.exists():
                 try:
-                    content = corr_text_file.read_text(encoding='utf-8')
+                    # Пробуем cp1251 сначала, потом utf-8
+                    try:
+                        content = corr_text_file.read_text(encoding='cp1251')
+                    except UnicodeDecodeError:
+                        content = corr_text_file.read_text(encoding='utf-8')
                     # Best_Prompt
                     m = re.search(r'Best_Prompt:\s*(.+?)(?:\n|$)', content)
                     if m:
@@ -246,9 +283,15 @@ class WebMonitor:
                     if m:
                         duration = float(m.group(1))
                     # corrected_text для примеров
-                    m = re.search(r'=== CORRECT_TEXT ===\n(.*?)\n=== ETALON_TEXT ===', content, re.DOTALL)
+                    # ✅ Ищем текст между CORRECT_TEXT и ETALON_TEXT (гибкий regex)
+                    m = re.search(r'=== CORRECT_TEXT ===\s*\n(.*?)\n=== ETALON_TEXT ===', content, re.DOTALL)
                     if m:
                         corrected_text = m.group(1).strip()
+                    else:
+                        # Fallback: пробуем без \n после ===
+                        m = re.search(r'=== CORRECT_TEXT ===(.*?)=== ETALON_TEXT ===', content, re.DOTALL)
+                        if m:
+                            corrected_text = m.group(1).strip()
                 except Exception as e:
                     logger.warning(f"Ошибка чтения {corr_text_file}: {e}")
 
@@ -256,7 +299,11 @@ class WebMonitor:
             sum_text_file = summary_dir / f"{test_id}.txt"
             if sum_text_file.exists():
                 try:
-                    content = sum_text_file.read_text(encoding='utf-8')
+                    # Пробуем cp1251 сначала, потом utf-8
+                    try:
+                        content = sum_text_file.read_text(encoding='cp1251')
+                    except UnicodeDecodeError:
+                        content = sum_text_file.read_text(encoding='utf-8')
                     m = re.search(r'Best_Prompt:\s*(.+?)(?:\n|$)', content)
                     if m:
                         prompt_summary = m.group(1).strip()
@@ -1068,7 +1115,20 @@ HTML_TEMPLATE = """
         const avgDuration = (durationCount > 0) ? (totalDuration / durationCount).toFixed(2) : '—';
         const majorityStatusDisplay = majorityStatus === 'completed' ? '✅ completed' : (majorityStatus === 'failed' ? '❌ failed' : '⚖️ mixed');
 
-        const sorted = [...tests].sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
+        // ✅ Natural sort по ID (1_, 2_, 10_, 20_, 100_ вместо 1_, 10_, 100_, 2_, 20_)
+        function naturalSortKey(s) {
+            const parts = s.split(/(\d+)/);
+            return parts.map(p => { const n = parseInt(p); return isNaN(n) ? p.toLowerCase() : n; });
+        }
+        const sorted = [...tests].sort((a,b) => {
+            const keyA = naturalSortKey(a.id);
+            const keyB = naturalSortKey(b.id);
+            for (let i = 0; i < Math.min(keyA.length, keyB.length); i++) {
+                if (keyA[i] < keyB[i]) return -1;
+                if (keyA[i] > keyB[i]) return 1;
+            }
+            return keyA.length - keyB.length;
+        });
 
         let rows = '';
         for (let test of sorted) {

@@ -8,12 +8,13 @@
    4. Возвращает лучший
 """
 from typing import Dict, Any, List
+
 from agents.base_agent import BaseAgent
-from utils.lmstudio_client import LMStudioClient
-from metrics.wer_calculator import WERCalculator
+from config import MODEL_NAME, LANGUAGE
 from metrics.levenstein_calculator import LevenshteinCalculator
 from metrics.perplexity_calculator import PerplexityCalculator
-from config import MODEL_NAME
+from metrics.wer_calculator import WERCalculator
+from utils.lmstudio_client import LMStudioClient
 
 
 class SummarizerAggregator(BaseAgent):
@@ -41,7 +42,7 @@ class SummarizerAggregator(BaseAgent):
         super().__init__(client, "SummarizerAggregator")
         self.wer_calc = WERCalculator()
         self.lev_calc = LevenshteinCalculator()
-        self.perplexity_calc = PerplexityCalculator(language="ru")
+        self.perplexity_calc = PerplexityCalculator(language=LANGUAGE.lower())
 
     def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
         print("\n" + "=" * 80)

@@ -3,14 +3,11 @@
 CorSumAgentsAI - Система коррекции и суммаризации текстов на базе ансамбля LLM-агентов
 Версия 5.6.1 - Исправлены duration в веб-мониторе, устранены двойные записи
 """
-import json
-import os
+import csv
 import re
 import sys
-import warnings
-import csv
 import time
-from datetime import datetime
+import warnings
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -18,20 +15,17 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
     create_directories, DIRS, BASE_DIR, get_config_summary,
-    validate_config, SKIP_PROCESSED, should_skip_file, get_processed_files,
-    MODEL_NAME, WEB_MONITOR_ENABLED, WEB_MONITOR_HOST, WEB_MONITOR_PORT,
+    validate_config, SKIP_PROCESSED, should_skip_file, MODEL_NAME, WEB_MONITOR_ENABLED, WEB_MONITOR_PORT,
     BERTSCORE_ENABLED, SUMSCORE_ENABLED, SUMSCORE_WEIGHTS,
     ADAPTIVE_LEV_RETRY_ENABLED, XLS_UPDATE_AFTER_EACH_DOC,
     calculate_sumscore, get_sumscore_assessment, calculate_cor_score,
-    ADAPTIVE_CORRECTION_ENABLED, MAX_ADAPTIVE_ATTEMPTS, MAX_LEV_RETRY_ATTEMPTS,
-    TEMP_RETRY_TEMPS, LEV_RETRY_TEMPS, DELTA_LEV_THRESHOLD,
-    USE_SAVED_PROMPTS, USE_FEW_SHOT_PROMPT, USE_CHAIN_OF_THOUGHT_PROMPT
+    DATA_LANG_DIR
 )
 from utils.lmstudio_client import LMStudioClient
 from utils.agent_memory import AgentMemory
 from utils.logger import setup_logger, DateLogger, print_log_folder_info
 from utils.colors import (
-    Color, cprint, cformat, print_info, print_error,
+    Color, cformat, print_info, print_error,
     print_warning, print_metric, print_success, print_normal, init_colors
 )
 from orchestrator import Orchestrator, AgentState
@@ -256,8 +250,8 @@ class XLSExporter:
             return False
     @staticmethod
     def update_xls_after_each_document(metrics_row: Dict[str, Any], time_stat: Dict[str, Any], xls_filename: str = None):
-        if xls_filename is None: xls_filename = DIRS["logs"] / "metrics.xls"
-        DIRS["logs"].mkdir(parents=True, exist_ok=True)
+        if xls_filename is None: xls_filename = DIRS["metrics"] / "metrics.xls"
+        DIRS["metrics"].mkdir(parents=True, exist_ok=True)
         cor_score = float(metrics_row.get('CorScore', 0) or 0)
         delta_lev = float(metrics_row.get('delta_Lev', 0) or 0)
         if not XLSExporter._should_update_xls(metrics_row.get('file_name', ''), cor_score, delta_lev, xls_filename): return
@@ -307,8 +301,8 @@ class XLSExporter:
             logger.error(f"[XLS] Ошибка: {e}")
     @staticmethod
     def save_metrics_xls(all_metrics: List[Dict], time_stats: List[Dict], xls_filename: str = None):
-        if xls_filename is None: xls_filename = DIRS["logs"] / "metrics.xls"
-        DIRS["logs"].mkdir(parents=True, exist_ok=True)
+        if xls_filename is None: xls_filename = DIRS["metrics"] / "metrics.xls"
+        DIRS["metrics"].mkdir(parents=True, exist_ok=True)
         try:
             with open(xls_filename, 'w', encoding='utf-8') as f:
                 f.write('\t'.join(XLSExporter.XLS_HEADERS) + '\n')
@@ -363,9 +357,9 @@ class DirectoryScanner:
                 "id": file_id,
                 "task_type": "combined",
                 "language": DirectoryScanner._detect_language(file_id),
-                "input_file": f"data/Incorrect_texts/{file_id}.txt",
-                "reference_text_file": f"data/etalon_texts/{file_id}.txt",
-                "reference_summary_file": f"data/etalon_summaries/{file_id}.txt"
+                "input_file": f"data/{DATA_LANG_DIR}/Incorrect_texts/{file_id}.txt",
+                "reference_text_file": f"data/{DATA_LANG_DIR}/etalon_texts/{file_id}.txt",
+                "reference_summary_file": f"data/{DATA_LANG_DIR}/etalon_summaries/{file_id}.txt"
             })
         correction_only_ids = (incorrect_files & etalon_text_files) - etalon_summary_files
         for file_id in sorted(correction_only_ids):
@@ -373,8 +367,8 @@ class DirectoryScanner:
                 "id": file_id,
                 "task_type": "correction",
                 "language": DirectoryScanner._detect_language(file_id),
-                "input_file": f"data/Incorrect_texts/{file_id}.txt",
-                "reference_text_file": f"data/etalon_texts/{file_id}.txt",
+                "input_file": f"data/{DATA_LANG_DIR}/Incorrect_texts/{file_id}.txt",
+                "reference_text_file": f"data/{DATA_LANG_DIR}/etalon_texts/{file_id}.txt",
                 "reference_summary_file": None
             })
         return test_cases
@@ -511,7 +505,7 @@ Best_Prompt: {best_prompt[:200]}...
 PROMPT: {prompt_num}
 Time: {correction_time:.3f} s
 """
-        with open(filename, "w", encoding="utf-8") as f: f.write(content)
+        with open(filename, "w", encoding="cp1251", errors="replace") as f: f.write(content)
         metrics_content = f"""################################################################################
 #                    МЕТРИКИ КОРРЕКЦИИ                                        #
 ################################################################################
@@ -524,7 +518,7 @@ LevRating: {FileSaver._safe_float(m.get("LevRating_0"))} → {FileSaver._safe_fl
 Perplexity: {FileSaver._safe_float(state.get("perplexity", {}).get("perplexity"))}
 Quality: {FileSaver._safe_str(m.get("quality_assessment"))}
 """
-        with open(metrics_filename, "w", encoding="utf-8") as f: f.write(metrics_content)
+        with open(metrics_filename, "w", encoding="cp1251", errors="replace") as f: f.write(metrics_content)
         print_success(f"  💾 Файл коррекции сохранён: {filename}")
         return str(filename)
     @staticmethod
@@ -569,7 +563,7 @@ Best_Prompt: {best_prompt}
 PROMPT: {prompt_num}
 Time: {summarization_time:.2f} s
 """
-        with open(filename, "w", encoding="utf-8") as f: f.write(content)
+        with open(filename, "w", encoding="cp1251", errors="replace") as f: f.write(content)
         metrics_content = f"""################################################################################
 #                    МЕТРИКИ СУММАРИЗАЦИИ                                     #
 ################################################################################
@@ -585,7 +579,7 @@ SumScore: {sumscore}
 Compression: {m.get('compression_ratio', 'N/A')}
 Quality: {quality}
 """
-        with open(metrics_filename, "w", encoding="utf-8") as f: f.write(metrics_content)
+        with open(metrics_filename, "w", encoding="cp1251", errors="replace") as f: f.write(metrics_content)
         print_success(f"  💾 Файл суммаризации сохранён: {filename}")
         return str(filename)
     @staticmethod
@@ -691,7 +685,8 @@ def main():
             print_normal(f"     └─ {dir_path.name}: {file_count} файлов")
     logger.info("[Main] Директории метрик проверены")
     print_normal("  🧠 Инициализация памяти агентов...")
-    memory = AgentMemory(memory_dir="data/memory")
+    memory_path = BASE_DIR / "data" / DATA_LANG_DIR / "memory"
+    memory = AgentMemory(memory_dir=str(memory_path))
     memory_stats = memory.get_memory_stats()
     print_normal(f"     └─ История исправлений: {memory_stats['history_size']}")
     print_normal(f"     └─ Частые ошибки: {memory_stats['common_errors_count']}")
@@ -982,12 +977,11 @@ def main():
             traceback.print_exc()
             continue
     time_stats.end_total()
-    if web_monitor: web_monitor.update_test_status("system", "completed")
     print_normal("\n  📊 Сохранение XLS файла метрик...")
-    xls_filename = DIRS["logs"] / "metrics.xls"
+    xls_filename = DIRS["metrics"] / "metrics.xls"
     XLSExporter.save_metrics_xls(all_metrics, time_stats_list, xls_filename)
     print_normal("\n  📊 Сохранение CSV файла метрик...")
-    csv_filename = DIRS["logs"] / "metrics.csv"
+    csv_filename = DIRS["metrics"] / "metrics.csv"
     FileSaver.save_metrics_csv(all_metrics, csv_filename)
     cache_stats = client.get_cache_stats()
     print_info(f"\n  💾 Статистика кэша LLM:")

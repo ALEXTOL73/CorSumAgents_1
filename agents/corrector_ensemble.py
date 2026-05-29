@@ -3,27 +3,27 @@
 Агент коррекции на базе ансамбля LLM
 Версия 5.10.2 - Сохранение типов промптов и температур в state для агрегатора
 """
+import json
 from typing import Dict, Any, List, Optional, Tuple
+
 from agents.base_agent import BaseAgent
-from utils.lmstudio_client import LMStudioClient
-from utils.agent_memory import AgentMemory
-from metrics.wer_calculator import WERCalculator
-from metrics.levenstein_calculator import LevenshteinCalculator
-from metrics.perplexity_calculator import PerplexityCalculator
-from utils.text_postprocessor import TextPostprocessor
 from config import (
     ENSEMBLE_SIZE, TEMPERATURE_RANGE, MODEL_NAME,
     ADAPTIVE_LEV_RETRY_ENABLED, MAX_LEV_RETRY_ATTEMPTS, DELTA_LEV_THRESHOLD,
     LEV_RETRY_TEMPS, USE_SAVED_PROMPTS, USE_FEW_SHOT_PROMPT, USE_CHAIN_OF_THOUGHT_PROMPT,
     DYNAMIC_TEMPERATURES_ENABLED, SELF_CONSISTENCY_ENABLED, SELF_CONSISTENCY_EXTRA_COUNT,
-    ERROR_PROFILE_ENABLED, LEV_WEIGHT, PERPLEXITY_WEIGHT
+    ERROR_PROFILE_ENABLED, LEV_WEIGHT, PERPLEXITY_WEIGHT, LANGUAGE
 )
-import json
-from pathlib import Path
+from metrics.levenstein_calculator import LevenshteinCalculator
+from metrics.perplexity_calculator import PerplexityCalculator
+from metrics.wer_calculator import WERCalculator
+from utils.agent_memory import AgentMemory
+from utils.lmstudio_client import LMStudioClient
+from utils.text_postprocessor import TextPostprocessor
 
 
 class CorrectorEnsemble(BaseAgent):
-    BASE_PROMPT = """Ты профессиональный редактор с 20-летним стажем.
+    BASE_PROMPT_RU = """Ты профессиональный редактор с 20-летним стажем.
 
 ЗАДАЧА: Исправь все ошибки в тексте, сохраняя исходный смысл.
 
@@ -45,7 +45,29 @@ class CorrectorEnsemble(BaseAgent):
 
 ИСПРАВЛЕННЫЙ ТЕКСТ:"""
 
-    FEW_SHOT_PROMPT = """Ты профессиональный редактор. Исправь ошибки в тексте, сохраняя стиль автора.
+    BASE_PROMPT_EN = """You are a professional editor with 20 years of experience.
+
+TASK: Correct all errors in the text while preserving the original meaning.
+
+TYPES OF ERRORS TO FIX:
+1. Spelling errors
+2. Punctuation errors
+3. Grammar errors
+4. Stylistic issues
+
+IMPORTANT:
+- Do not change the meaning
+- Do not add new information
+- Do not remove key details
+- Preserve formatting
+- ✅ PRESERVE AUTHOR'S STYLE (tone, manner of expression, vocabulary)
+
+TEXT FOR CORRECTION:
+{text}
+
+CORRECTED TEXT:"""
+
+    FEW_SHOT_PROMPT_RU = """Ты профессиональный редактор. Исправь ошибки в тексте, сохраняя стиль автора.
 
 ПРИМЕР 1:
 Вход: "Как отметила палата в по которых он учаях центры занял об ru 
@@ -68,7 +90,26 @@ class CorrectorEnsemble(BaseAgent):
 
 ИСПРАВЛЕННЫЙ ТЕКСТ:"""
 
-    CHAIN_OF_THOUGHT_PROMPT = """Ты профессиональный редактор. Исправь ошибки в тексте, сохраняя стиль автора.
+    FEW_SHOT_PROMPT_EN = """You are a professional editor. Correct errors in the text while preserving the author's style.
+
+EXAMPLE 1:
+Input: "helo how are you todei"
+Output: "hello how are you today"
+
+EXAMPLE 2:
+Input: "i didnt went to scool becuse i was sik"
+Output: "i didn't go to school because i was sick"
+
+EXAMPLE 3:
+Input: "the governement anounced new policys for economic developement"
+Output: "the government announced new policies for economic development"
+
+NOW CORRECT THIS TEXT, PRESERVING STYLE:
+{text}
+
+CORRECTED TEXT:"""
+
+    CHAIN_OF_THOUGHT_PROMPT_RU = """Ты профессиональный редактор. Исправь ошибки в тексте, сохраняя стиль автора.
 
 ШАГ 1: Прочитай текст внимательно
 ШАГ 2: Найди все орфографические ошибки
@@ -83,6 +124,33 @@ class CorrectorEnsemble(BaseAgent):
 
 ИСПРАВЛЕННЫЙ ТЕКСТ:"""
 
+    CHAIN_OF_THOUGHT_PROMPT_EN = """You are a professional editor. Correct errors in the text while preserving the author's style.
+
+STEP 1: Read the text carefully
+STEP 2: Find all spelling errors
+STEP 3: Find all punctuation errors
+STEP 4: Find all grammar errors
+STEP 5: Correct each error in order
+STEP 6: Verify that meaning and style are preserved
+STEP 7: Return only the corrected text
+
+TEXT FOR CORRECTION:
+{text}
+
+CORRECTED TEXT:"""
+
+    @property
+    def BASE_PROMPT(self):
+        return self.BASE_PROMPT_EN if LANGUAGE.lower() == 'en' else self.BASE_PROMPT_RU
+
+    @property
+    def FEW_SHOT_PROMPT(self):
+        return self.FEW_SHOT_PROMPT_EN if LANGUAGE.lower() == 'en' else self.FEW_SHOT_PROMPT_RU
+
+    @property
+    def CHAIN_OF_THOUGHT_PROMPT(self):
+        return self.CHAIN_OF_THOUGHT_PROMPT_EN if LANGUAGE.lower() == 'en' else self.CHAIN_OF_THOUGHT_PROMPT_RU
+
     def __init__(self, client: LMStudioClient, ensemble_size: int = ENSEMBLE_SIZE, memory: AgentMemory = None):
         super().__init__(client, "CorrectorEnsemble")
         self.model_name = MODEL_NAME
@@ -91,7 +159,7 @@ class CorrectorEnsemble(BaseAgent):
         self.current_ensemble_size = ensemble_size
         self.wer_calc = WERCalculator()
         self.lev_calc = LevenshteinCalculator()
-        self.perplexity_calc = PerplexityCalculator(language="ru")
+        self.perplexity_calc = PerplexityCalculator(language=LANGUAGE.lower())
         self.saved_prompts = self._load_saved_prompts()
         self.error_profile = {}
         self.logger.info(f"[CorrectorEnsemble] Инициализирован v5.10.2 (сохранение типов промптов)")
@@ -100,7 +168,8 @@ class CorrectorEnsemble(BaseAgent):
         if not self.memory or not USE_SAVED_PROMPTS:
             return []
         try:
-            prompts_file = Path("data/memory/best_prompts.json")
+            # ✅ Используем DATA_LANG_DIR для пути к памяти
+            prompts_file = self.memory.memory_dir / "best_prompts.json"
             if prompts_file.exists():
                 with open(prompts_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -121,7 +190,10 @@ class CorrectorEnsemble(BaseAgent):
 
     def _ensure_text_placeholder(self, prompt: str) -> str:
         if "{text}" not in prompt:
-            prompt += "\n\nТЕКСТ ДЛЯ КОРРЕКЦИИ:\n{text}\n\nИСПРАВЛЕННЫЙ ТЕКСТ:"
+            if LANGUAGE.lower() == 'en':
+                prompt += "\n\nTEXT FOR CORRECTION:\n{text}\n\nCORRECTED TEXT:"
+            else:
+                prompt += "\n\nТЕКСТ ДЛЯ КОРРЕКЦИИ:\n{text}\n\nИСПРАВЛЕННЫЙ ТЕКСТ:"
         return prompt
 
     def _compute_dynamic_temperatures(self, input_text: str, reference_text: str = None) -> List[float]:
@@ -239,6 +311,15 @@ class CorrectorEnsemble(BaseAgent):
                 self.logger.error(f"[Ensemble] Ошибка записи в память: {e}")
 
         best_result["ensemble_outputs"] = variants
+        # ✅ Добавляем типы промптов и температуры в best_result чтобы aggregator мог их использовать
+        best_result["ensemble_prompts"] = prompt_types.copy()
+        best_result["ensemble_temperatures"] = temps.copy()
+        
+        # ✅ ОБЯЗАТЕЛЬНО обновляем state чтобы aggregator мог прочитать из state
+        state["ensemble_outputs"] = variants
+        state["ensemble_prompts"] = prompt_types.copy()
+        state["ensemble_temperatures"] = temps.copy()
+        
         return best_result
 
     def _generate_variants_with_prompts(self, base_prompt: str, input_text: str, reference_text: str,

@@ -2,21 +2,24 @@
 Память агентов для обучения на предыдущих ошибках
 Версия 5.6.0 - Добавлен семантический поиск few‑shot через эмбеддинги
 """
-import json
-import os
 import hashlib
+import json
 import time
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Any, Optional
+
+from config import PROMPT_CACHE_ENABLED, PROMPT_CACHE_MAX_SIZE, PROMPT_CACHE_MIN_IMPROVEMENT, DATA_LANG_DIR
 from utils.logger import setup_logger
-from config import PROMPT_CACHE_ENABLED, PROMPT_CACHE_MAX_SIZE, PROMPT_CACHE_MIN_IMPROVEMENT
 
 logger = setup_logger("AgentMemory")
 
 
 class AgentMemory:
-    def __init__(self, memory_dir: str = "data/memory"):
+    def __init__(self, memory_dir: str = None):
+        # ✅ Если memory_dir не указан, используем DATA_LANG_DIR
+        if memory_dir is None:
+            memory_dir = f"data/{DATA_LANG_DIR}/memory"
         self.memory_dir = Path(memory_dir)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
 

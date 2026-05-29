@@ -3,27 +3,27 @@
 Ансамбль для суммаризации текста
 Версия 1.17 - Усилено влияние few-shot и CoT, добавлены в основной ансамбль
 """
+import json
+import time
+from collections import Counter
 from typing import Dict, Any, List, Optional, Tuple
+
 from agents.base_agent import BaseAgent
-from utils.lmstudio_client import LMStudioClient
-from utils.agent_memory import AgentMemory
-from metrics.meteor_calculator import METEORCalculator
-from utils.text_postprocessor import TextPostprocessor
 from config import (
     MODEL_NAME, SUMMARY_TEMPERATURE_RANGE, SUMMARY_MAX_RETRY_ATTEMPTS,
     SUMMARY_RETRY_TEMPS, SUMMARY_USE_SAVED_PROMPTS, SUMMARY_USE_FEW_SHOT,
     SUMMARY_USE_CHAIN_OF_THOUGHT, SUMMARY_SELF_CONSISTENCY_ENABLED,
     SUMMARY_SELF_CONSISTENCY_EXTRA_COUNT, SUMMARY_DYNAMIC_TEMPERATURES,
-    BERTSCORE_ENABLED, SUMSCORE_WEIGHTS
+    BERTSCORE_ENABLED, LANGUAGE
 )
-import json
-from pathlib import Path
-import time
-from collections import Counter
+from metrics.meteor_calculator import METEORCalculator
+from utils.agent_memory import AgentMemory
+from utils.lmstudio_client import LMStudioClient
+from utils.text_postprocessor import TextPostprocessor
 
 
 class SummarizerEnsemble(BaseAgent):
-    BASE_PROMPT = """Ты профессиональный суммаризатор. Создай краткое резюме текста.
+    BASE_PROMPT_RU = """Ты профессиональный суммаризатор. Создай краткое резюме текста.
 
 ТРЕБОВАНИЯ:
 - Сохрани ключевые факты и основную мысль
@@ -40,7 +40,24 @@ class SummarizerEnsemble(BaseAgent):
 
 РЕЗЮМЕ:"""
 
-    FEW_SHOT_PROMPT = """Ты профессиональный суммаризатор. Создай краткое резюме текста, учитывая целевую аудиторию.
+    BASE_PROMPT_EN = """You are a professional summarizer. Create a brief summary of the text.
+
+REQUIREMENTS:
+- Preserve key facts and main idea
+- MUST preserve: numbers, dates, proper names, organization names
+- Do not use generic phrases ("the text says", "the author notes")
+- Length: 1-4 sentences
+- Do not add new information
+- Use the same language as the text
+- ✅ CONSIDER TARGET AUDIENCE: the summary is for someone who needs the essence without unnecessary details
+- Return only the summary
+
+TEXT FOR SUMMARIZATION:
+{text}
+
+SUMMARY:"""
+
+    FEW_SHOT_PROMPT_RU = """Ты профессиональный суммаризатор. Создай краткое резюме текста, учитывая целевую аудиторию.
 
 ПРИМЕРЫ:
 Вход: "Иван Иванов родился в 1990 году в Москве. Он окончил МГУ и работает программистом. Увлекается спортом."
@@ -54,7 +71,21 @@ class SummarizerEnsemble(BaseAgent):
 
 РЕЗЮМЕ:"""
 
-    CHAIN_OF_THOUGHT_PROMPT = """Ты профессиональный суммаризатор. Создай краткое резюме текста, учитывая целевую аудиторию.
+    FEW_SHOT_PROMPT_EN = """You are a professional summarizer. Create a brief summary of the text for a general audience.
+
+EXAMPLES:
+Input: "John Smith was born in 1985 in New York. He graduated from MIT and works as a software engineer. He enjoys hiking."
+Output: "John Smith (b. 1985, New York) graduated from MIT, works as a software engineer, and enjoys hiking."
+
+Input: "The government meeting today discussed economic development issues. The finance minister presented the new budget."
+Output: "The government discussed economic development, and the finance minister presented the new budget."
+
+NOW CREATE A SUMMARY OF THIS TEXT FOR A GENERAL AUDIENCE:
+{text}
+
+SUMMARY:"""
+
+    CHAIN_OF_THOUGHT_PROMPT_RU = """Ты профессиональный суммаризатор. Создай краткое резюме текста, учитывая целевую аудиторию.
 
 ШАГ 1: Определи основную тему текста
 ШАГ 2: Выдели ключевые факты, важные для широкой аудитории
@@ -65,6 +96,30 @@ class SummarizerEnsemble(BaseAgent):
 {text}
 
 РЕЗЮМЕ:"""
+
+    CHAIN_OF_THOUGHT_PROMPT_EN = """You are a professional summarizer. Create a brief summary for a general audience.
+
+STEP 1: Identify the main topic
+STEP 2: Extract key facts important for a general audience
+STEP 3: Formulate a 1-4 sentence summary, avoiding specialized jargon
+STEP 4: Verify nothing extra was added and the summary is clear to non-experts
+
+TEXT:
+{text}
+
+SUMMARY:"""
+
+    @property
+    def BASE_PROMPT(self):
+        return self.BASE_PROMPT_EN if LANGUAGE.lower() == 'en' else self.BASE_PROMPT_RU
+
+    @property
+    def FEW_SHOT_PROMPT(self):
+        return self.FEW_SHOT_PROMPT_EN if LANGUAGE.lower() == 'en' else self.FEW_SHOT_PROMPT_RU
+
+    @property
+    def CHAIN_OF_THOUGHT_PROMPT(self):
+        return self.CHAIN_OF_THOUGHT_PROMPT_EN if LANGUAGE.lower() == 'en' else self.CHAIN_OF_THOUGHT_PROMPT_RU
 
     def __init__(self, client: LMStudioClient, memory: Optional[AgentMemory] = None):
         super().__init__(client, "SummarizerEnsemble")
@@ -83,7 +138,8 @@ class SummarizerEnsemble(BaseAgent):
         if not self.memory or not SUMMARY_USE_SAVED_PROMPTS:
             return []
         try:
-            prompts_file = Path("data/memory/best_summary_prompts.json")
+            # ✅ Используем DATA_LANG_DIR для пути к памяти
+            prompts_file = self.memory.memory_dir / "best_summary_prompts.json"
             if prompts_file.exists():
                 with open(prompts_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -103,7 +159,10 @@ class SummarizerEnsemble(BaseAgent):
 
     def _ensure_text_placeholder(self, prompt: str) -> str:
         if "{text}" not in prompt:
-            prompt += "\n\nТЕКСТ:\n{text}\n\nРЕЗЮМЕ:"
+            if LANGUAGE.lower() == 'en':
+                prompt += "\n\nTEXT:\n{text}\n\nSUMMARY:"
+            else:
+                prompt += "\n\nТЕКСТ:\n{text}\n\nРЕЗЮМЕ:"
         return prompt
 
     def _call_judge_for_metrics(self, original: str, summary: str, reference: str) -> Dict[str, float]:
@@ -206,7 +265,7 @@ class SummarizerEnsemble(BaseAgent):
                     response = self.client.generate(
                         prompt=full_prompt,
                         temperature=best_temp,
-                        system_prompt="Ты суммаризатор. Верни только резюме из 1-4 предложений, учитывая целевую аудиторию."
+                        system_prompt="You are a summarizer. Return only a 1-4 sentence summary for the target audience." if LANGUAGE.lower() == 'en' else "Ты суммаризатор. Верни только резюме из 1-4 предложений, учитывая целевую аудиторию."
                     )
                     if response and len(response.strip()) >= 10:
                         cleaned = TextPostprocessor.clean_text(response.strip())
@@ -336,7 +395,7 @@ class SummarizerEnsemble(BaseAgent):
         # 2. Few-shot промпт (низкая температура)
         if SUMMARY_USE_FEW_SHOT and self.memory:
             try:
-                examples = self.memory.get_summary_few_shot_examples(input_text, domain, max_examples=2, length_ratio=0.2)
+                examples = self.memory.get_summary_few_shot_examples(input_text, domain, max_examples=3, length_ratio=0.2)
                 few_shot_prompt = self._build_few_shot_prompt(examples, input_text)
                 response = self._generate_with_prompt(few_shot_prompt, 0.3)
                 if response:
@@ -382,7 +441,7 @@ class SummarizerEnsemble(BaseAgent):
             response = self.client.generate(
                 prompt=full_prompt,
                 temperature=temperature,
-                system_prompt="Ты суммаризатор. Верни только резюме из 1-4 предложений, учитывая целевую аудиторию."
+                system_prompt="You are a summarizer. Return only a 1-4 sentence summary for the target audience." if LANGUAGE.lower() == 'en' else "Ты суммаризатор. Верни только резюме из 1-4 предложений, учитывая целевую аудиторию.",
             )
             if response and len(response.strip()) >= 10:
                 cleaned = TextPostprocessor.clean_text(response.strip())
@@ -392,10 +451,20 @@ class SummarizerEnsemble(BaseAgent):
         return None
 
     def _build_few_shot_prompt(self, examples: List[Dict], input_text: str) -> str:
-        example_text = "ПРИМЕРЫ ХОРОШИХ РЕЗЮМЕ:\n"
-        for i, ex in enumerate(examples, 1):
-            example_text += f"Пример {i}:\nВход: {ex['input']}\nВыход: {ex['output']}\n\n"
-        prompt = f"""{example_text}
+        if LANGUAGE.lower() == 'en':
+            example_text = "EXAMPLES OF GOOD SUMMARIES:\n"
+            for i, ex in enumerate(examples, 1):
+                example_text += f"Example {i}:\nInput: {ex['input']}\nOutput: {ex['output']}\n\n"
+            prompt = f"""{example_text}
+NOW CREATE A SUMMARY OF THIS TEXT:
+{input_text}
+
+SUMMARY:"""
+        else:
+            example_text = "ПРИМЕРЫ ХОРОШИХ РЕЗЮМЕ:\n"
+            for i, ex in enumerate(examples, 1):
+                example_text += f"Пример {i}:\nВход: {ex['input']}\nВыход: {ex['output']}\n\n"
+            prompt = f"""{example_text}
 ТЕПЕРЬ СДЕЛАЙ РЕЗЮМЕ ЭТОГО ТЕКСТА:
 {input_text}
 
@@ -434,7 +503,7 @@ class SummarizerEnsemble(BaseAgent):
                 response = self.client.generate(
                     prompt=full_prompt,
                     temperature=temp,
-                    system_prompt="Ты суммаризатор. Верни только резюме из 1-4 предложений, учитывая целевую аудиторию."
+                    system_prompt="You are a summarizer. Return only a 1-4 sentence summary for the target audience." if LANGUAGE.lower() == 'en' else "Ты суммаризатор. Верни только резюме из 1-4 предложений, учитывая целевую аудиторию.",
                 )
                 if not response or len(response.strip()) < 10:
                     attempts += 1

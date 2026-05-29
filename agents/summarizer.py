@@ -3,24 +3,24 @@
 Агент суммаризации на базе ансамбля LLM
 Версия 5.6.1 - Исправлен вызов судьи для получения BertScore
 """
+import json
 from typing import Dict, Any, List, Optional, Tuple
+
 from agents.base_agent import BaseAgent
-from utils.lmstudio_client import LMStudioClient
-from utils.agent_memory import AgentMemory
-from metrics.meteor_calculator import METEORCalculator
 from config import (
     MODEL_NAME, MAX_LEV_RETRY_ATTEMPTS,
     USE_SAVED_PROMPTS, USE_FEW_SHOT_PROMPT, USE_CHAIN_OF_THOUGHT_PROMPT,
-    BERTSCORE_ENABLED, SUMSCORE_WEIGHTS
+    BERTSCORE_ENABLED, LANGUAGE
 )
-import json
-from pathlib import Path
+from metrics.meteor_calculator import METEORCalculator
+from utils.agent_memory import AgentMemory
+from utils.lmstudio_client import LMStudioClient
 
 
 class Summarizer(BaseAgent):
     """Ансамбль для суммаризации текста с корректным BertScore и SumScore"""
 
-    BASE_PROMPT = """Ты профессиональный суммаризатор. Создай краткое резюме текста.
+    BASE_PROMPT_RU = """Ты профессиональный суммаризатор. Создай краткое резюме текста.
 
 ТРЕБОВАНИЯ:
 - Сохрани ключевые факты и основную мысль
@@ -34,7 +34,21 @@ class Summarizer(BaseAgent):
 
 РЕЗЮМЕ:"""
 
-    FEW_SHOT_PROMPT = """Ты профессиональный суммаризатор. Создай краткое резюме текста.
+    BASE_PROMPT_EN = """You are a professional summarizer. Create a brief summary of the text.
+
+REQUIREMENTS:
+- Preserve key facts and main idea
+- Length: 1-4 sentences
+- Do not add new information
+- Use the same language as the text
+- Return only the summary
+
+TEXT FOR SUMMARIZATION:
+{text}
+
+SUMMARY:"""
+
+    FEW_SHOT_PROMPT_RU = """Ты профессиональный суммаризатор. Создай краткое резюме текста.
 
 ПРИМЕРЫ:
 Вход: "Иван Иванов родился в 1990 году в Москве. Он окончил МГУ и работает программистом. Увлекается спортом."
@@ -48,7 +62,21 @@ class Summarizer(BaseAgent):
 
 РЕЗЮМЕ:"""
 
-    CHAIN_OF_THOUGHT_PROMPT = """Ты профессиональный суммаризатор. Создай краткое резюме текста.
+    FEW_SHOT_PROMPT_EN = """You are a professional summarizer. Create a brief summary of the text.
+
+EXAMPLES:
+Input: "John Smith was born in 1985 in New York. He graduated from MIT and works as a software engineer."
+Output: "John Smith (b. 1985, New York) graduated from MIT and works as a software engineer."
+
+Input: "The government meeting discussed economic development. The finance minister presented the new budget."
+Output: "The government discussed economic development and presented the new budget."
+
+NOW SUMMARIZE THIS TEXT:
+{text}
+
+SUMMARY:"""
+
+    CHAIN_OF_THOUGHT_PROMPT_RU = """Ты профессиональный суммаризатор. Создай краткое резюме текста.
 
 ШАГ 1: Определи основную тему текста
 ШАГ 2: Выдели ключевые факты
@@ -59,6 +87,30 @@ class Summarizer(BaseAgent):
 {text}
 
 РЕЗЮМЕ:"""
+
+    CHAIN_OF_THOUGHT_PROMPT_EN = """You are a professional summarizer. Create a brief summary of the text.
+
+STEP 1: Identify the main topic
+STEP 2: Extract key facts
+STEP 3: Formulate a 1-4 sentence summary
+STEP 4: Verify nothing extra was added
+
+TEXT:
+{text}
+
+SUMMARY:"""
+
+    @property
+    def BASE_PROMPT(self):
+        return self.BASE_PROMPT_EN if LANGUAGE.lower() == 'en' else self.BASE_PROMPT_RU
+
+    @property
+    def FEW_SHOT_PROMPT(self):
+        return self.FEW_SHOT_PROMPT_EN if LANGUAGE.lower() == 'en' else self.FEW_SHOT_PROMPT_RU
+
+    @property
+    def CHAIN_OF_THOUGHT_PROMPT(self):
+        return self.CHAIN_OF_THOUGHT_PROMPT_EN if LANGUAGE.lower() == 'en' else self.CHAIN_OF_THOUGHT_PROMPT_RU
 
     def __init__(self, client: LMStudioClient, memory: Optional[AgentMemory] = None):
         super().__init__(client, "Summarizer")
@@ -72,7 +124,8 @@ class Summarizer(BaseAgent):
         if not self.memory or not USE_SAVED_PROMPTS:
             return []
         try:
-            prompts_file = Path("data/memory/best_summary_prompts.json")
+            # ✅ Используем DATA_LANG_DIR для пути к памяти
+            prompts_file = self.memory.memory_dir / "best_summary_prompts.json"
             if prompts_file.exists():
                 with open(prompts_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -92,7 +145,10 @@ class Summarizer(BaseAgent):
 
     def _ensure_text_placeholder(self, prompt: str) -> str:
         if "{text}" not in prompt:
-            prompt += "\n\nТЕКСТ:\n{text}\n\nРЕЗЮМЕ:"
+            if LANGUAGE.lower() == 'en':
+                prompt += "\n\nTEXT:\n{text}\n\nSUMMARY:"
+            else:
+                prompt += "\n\nТЕКСТ:\n{text}\n\nРЕЗЮМЕ:"
         return prompt
 
     def _compute_summary_metrics(self, summary: str, reference: str, original: str) -> Dict[str, float]:
@@ -185,7 +241,7 @@ class Summarizer(BaseAgent):
                 response = self.client.generate(
                     prompt=full_prompt,
                     temperature=temp,
-                    system_prompt="Ты профессиональный суммаризатор. Возвращай только резюме из 1-4 предложений."
+                    system_prompt="You are a professional summarizer. Return only a 1-4 sentence summary." if LANGUAGE.lower() == 'en' else "Ты профессиональный суммаризатор. Возвращай только резюме из 1-4 предложений.",
                 )
                 if response and len(response.strip()) >= 10:
                     variants.append(response.strip())
@@ -284,7 +340,7 @@ class Summarizer(BaseAgent):
                 response = self.client.generate(
                     prompt=full_prompt,
                     temperature=temp,
-                    system_prompt="Ты профессиональный суммаризатор. Возвращай только резюме из 1-4 предложений."
+                    system_prompt="You are a professional summarizer. Return only a 1-4 sentence summary." if LANGUAGE.lower() == 'en' else "Ты профессиональный суммаризатор. Возвращай только резюме из 1-4 предложений.",
                 )
                 if not response or len(response.strip()) < 10:
                     attempts += 1
