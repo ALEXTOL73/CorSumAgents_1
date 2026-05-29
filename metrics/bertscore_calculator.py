@@ -2,10 +2,12 @@
 Калькулятор метрики BertScore (семантическая схожесть)
 Версия 5.3.0 - Гарантированная однократная загрузка модели (глобальная переменная)
 """
-from typing import Dict, Any
-from utils.logger import setup_logger
 import warnings
+from typing import Dict, Any
+
 import torch
+
+from utils.logger import setup_logger
 
 logger = setup_logger("BertScoreCalculator", "bertscore_calculator")
 
@@ -15,9 +17,14 @@ _BERTSCORE_DEVICE = None
 
 
 def _get_device():
-    """Определение доступного устройства"""
+    """Определение доступного устройства с приоритетом GPU"""
+    # ✅ 1. Проверяем CUDA (NVIDIA GPU)
     if torch.cuda.is_available():
         return 'cuda'
+    # ✅ 2. Проверяем MPS (Apple Silicon GPU)
+    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return 'mps'
+    # ✅ 3. Fallback на CPU
     return 'cpu'
 
 
