@@ -87,12 +87,12 @@ class CorrectorAggregator(BaseAgent):
                 scores.append(-1e9)
                 prompt_type = ensemble_prompts[i] if i < len(ensemble_prompts) else "N/A"
                 # ✅ Определяем номер ТИПА промпта (1-5), не индекс варианта
-                if "few_shot" in prompt_type.lower():
-                    prompt_short = "#2 (FS)"
+                if "saved" in prompt_type.lower():
+                    prompt_short = "#2 (Mem)"
+                elif "few_shot" in prompt_type.lower():
+                    prompt_short = "#3 (FS)"
                 elif "cot" in prompt_type.lower() or "chain" in prompt_type.lower():
-                    prompt_short = "#3 (CoT)"
-                elif "saved" in prompt_type.lower():
-                    prompt_short = "#4 (Mem)"
+                    prompt_short = "#4 (CoT)"
                 elif "self-consistency" in prompt_type.lower():
                     prompt_short = "#5 (SC)"
                 elif "base" in prompt_type.lower() or prompt_type == "N/A":
@@ -112,12 +112,12 @@ class CorrectorAggregator(BaseAgent):
             scores.append(score)
             # ✅ Определяем номер ТИПА промпта (1-5), не индекс варианта
             prompt_type = ensemble_prompts[i] if i < len(ensemble_prompts) else "N/A"
-            if "few_shot" in prompt_type.lower():
-                prompt_short = "#2 (FS)"
+            if "saved" in prompt_type.lower():
+                prompt_short = "#2 (Mem)"
+            elif "few_shot" in prompt_type.lower():
+                prompt_short = "#3 (FS)"
             elif "cot" in prompt_type.lower() or "chain" in prompt_type.lower():
-                prompt_short = "#3 (CoT)"
-            elif "saved" in prompt_type.lower():
-                prompt_short = "#4 (Mem)"
+                prompt_short = "#4 (CoT)"
             elif "self-consistency" in prompt_type.lower():
                 prompt_short = "#5 (SC)"
             elif "base" in prompt_type.lower() or prompt_type == "N/A":
@@ -125,9 +125,9 @@ class CorrectorAggregator(BaseAgent):
             else:
                 prompt_short = f"#{i+1}"
             temp_val = ensemble_temps[i] if i < len(ensemble_temps) else "N/A"
-            print(f"  │ {i+1} │ {wer_v:8.4f}  │ {lev_v:8.4f} │ {ppl:8.4f}    │ {delta_wer:+6.4f}   │ {delta_lev:+6.4f} │{score:7.3f} │ {prompt_short:10}  │{temp_val:4}   │")
+            print(f"  │ {i+1} │ {wer_v:8.4f}  │ {lev_v:8.4f}  │ {ppl:8.4f}   │ {delta_wer:+6.4f}  │ {delta_lev:+6.4f} │{score:7.3f} │ {prompt_short:10}  │{temp_val:4}    │")
 
-        print("  └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘")
+        print("  └──────────────────────────────────────────────────────────────────────────────────────────────┘")
         print()
 
         best_idx = max(range(len(scores)), key=lambda i: scores[i])

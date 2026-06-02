@@ -47,6 +47,7 @@ class AgentState(TypedDict):
     metrics_summary: Annotated[Dict[str, Any], last_value]
     perplexity: Annotated[Dict[str, Any], last_value]
     best_temperature: Annotated[str, last_value]
+    best_prompt_type: Annotated[str, last_value]
     best_temperature_summary: Annotated[str, last_value]
     best_prompt_summary_type: Annotated[str, last_value]
     needs_retry_correction: Annotated[bool, last_value]
@@ -246,8 +247,11 @@ class Orchestrator:
             return "finish"
         if not meaning_preserved:
             state["cross_validation_iteration"] = iteration + 1
-            logger.info(f"[Orchestrator] Кросс-валидация не пройдена, повторная итерация {iteration + 1}")
-            return "retry"
+            logger.warning(f"[Orchestrator] Кросс-валидация не пройдена (итерация {iteration + 1}/{self.MAX_CROSS_VALIDATION_ITERATIONS}). "
+                          f"Повтор не поможет — завершение теста.")
+            # НЕ повторяем — повторный запуск того же конвейера даст тот же результат.
+            # Механизмы качества (ансамбль, агрегатор, рефлексия) уже отработали.
+            return "finish"
         logger.info(f"[Orchestrator] Кросс-валидация пройдена, завершение теста")
         return "finish"
 
@@ -274,7 +278,7 @@ class Orchestrator:
         if meaning_preserved:
             print(f"  ✅ Смысл сохранён")
         else:
-            print(f"  ⚠️ Смысл потерян")
+            print(f"  ⚠️ Смысл потерян (BertScore ниже порога) — тест будет завершён без повтора")
         return state
 
     def _check_meaning_preserved(self, state: AgentState) -> bool:
@@ -365,6 +369,7 @@ class Orchestrator:
             "cross_validation_iteration": 0, "meaning_preserved": True,
             "adaptive_config": {}, "correction_iteration": 0,
             "perplexity": {}, "best_temperature": "N/A",
+            "best_prompt_type": "базовый",
             "metrics_correction": {}, "previous_corrected_text": "",
             "needs_retry_correction": False, "needs_retry_summary": False,
             "aggregator_used": False, "aggregation_similarity": 0.0,

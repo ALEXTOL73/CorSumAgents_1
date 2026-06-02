@@ -112,7 +112,15 @@ class GEvalCalculator:
         # Пробуем очистить и распарсить
         cleaned = self._clean_json_string(json_str)
         try:
-            return json.loads(cleaned)
+            parsed = json.loads(cleaned)
+            # Ensure all numeric values are actually floats, not dicts or other types
+            for key in ["coherence", "consistency", "fluency", "relevance", "conciseness"]:
+                if key in parsed:
+                    val = parsed[key]
+                    if not isinstance(val, (int, float)):
+                        logger.warning(f"[G-Eval] Non-numeric value for {key}: {type(val).__name__}, converting to 0.5")
+                        parsed[key] = 0.5
+            return parsed
         except json.JSONDecodeError as e:
             logger.warning(f"[G-Eval] Ошибка парсинга JSON после очистки: {e}")
 
@@ -238,7 +246,7 @@ Criteria:
 - COHERENCE - logical flow, smooth transitions between ideas
 - CONSISTENCY - alignment with source text, no contradictions
 - FLUENCY - grammatical correctness, natural language
-- RELEVANCE - retention of key information, filtering of次要 content
+- RELEVANCE - retention of key information, filtering of secondary content
 - CONCISENESS - no redundancy, brevity of expression
 
 ORIGINAL TEXT:

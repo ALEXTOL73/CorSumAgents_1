@@ -284,7 +284,7 @@ CORRECTED TEXT:"""
         corrected = best_result.get("corrected_text", "")
         if not corrected or len(corrected.strip()) < len(input_text.strip()) * 0.3:
             self.logger.warning("[Ensemble] Результат коррекции пуст, возвращаем оригинал")
-            best_result = self._create_result(input_text, 0.5, prompt_template, reference_text, input_text, wer_before, lev_before)
+            best_result = self._create_result(input_text, 0.5, prompt_template, reference_text, input_text, wer_before, lev_before, prompt_type="базовый")
             best_result["ensemble_outputs"] = [input_text, input_text, input_text]
 
         m_cor = best_result.get("metrics_correction", {}) or {}
@@ -492,11 +492,11 @@ CORRECTED TEXT:"""
         if best_score < 0:
             print(f"  ⚠️ Лучший score = {best_score:.4f} < 0, возвращаем оригинал")
             self.logger.warning(f"[Ensemble] Лучший score <0, возвращаем оригинал")
-            return self._create_result(original, best_temp, best_prompt, reference, original, wer_original, lev_original)
+            return self._create_result(original, best_temp, best_prompt, reference, original, wer_original, lev_original, prompt_type=best_type)
         else:
             print(f"  ✅ Лучший вариант #{best_idx+1} (temp={best_temp:.2f}, тип={best_type}, score={best_score:.6f})")
             print("-" * 80 + "\n")
-            return self._create_result(best_variant, best_temp, best_prompt, reference, original, wer_original, lev_original)
+            return self._create_result(best_variant, best_temp, best_prompt, reference, original, wer_original, lev_original, prompt_type=best_type)
 
     def _adaptive_retry(self, current_best: Dict[str, Any], base_prompt: str, input_text: str,
                        reference_text: str, wer_before: float, lev_before: float) -> Dict[str, Any]:
@@ -522,6 +522,15 @@ CORRECTED TEXT:"""
         for name, prompt, temp in strategies:
             if attempts >= MAX_LEV_RETRY_ATTEMPTS:
                 break
+            # Определяем тип промпта для меток в веб-мониторе
+            if name == "few_shot":
+                ptype_label = "few-shot"
+            elif name == "cot":
+                ptype_label = "CoT"
+            elif name.startswith("saved"):
+                ptype_label = "saved"
+            else:
+                ptype_label = "базовый"
             print(f"\n  Попытка {attempts+1}: стратегия '{name}' (temp={temp})")
             self.logger.info(f"[Ensemble] Адаптивная попытка {attempts+1}: {name} (temp={temp})")
             try:
@@ -541,10 +550,10 @@ CORRECTED TEXT:"""
                 print(f"     └─ delta_WER={delta_wer:+.4f}, delta_Lev={delta_lev:+.4f}, Perplexity={perplexity:.4f}, CorScore={cor_score:.6f}")
                 if delta_lev > DELTA_LEV_THRESHOLD:
                     print(f"     └─ ✅ Успех! delta_Lev > 0")
-                    return self._create_result(cleaned, temp, full_prompt, reference_text, input_text, wer_before, lev_before)
+                    return self._create_result(cleaned, temp, full_prompt, reference_text, input_text, wer_before, lev_before, prompt_type=ptype_label)
                 if cor_score > best_score:
                     print(f"     └─ Новый лучший результат (CorScore={cor_score:.6f})")
-                    best_score, best_result = cor_score, self._create_result(cleaned, temp, full_prompt, reference_text, input_text, wer_before, lev_before)
+                    best_score, best_result = cor_score, self._create_result(cleaned, temp, full_prompt, reference_text, input_text, wer_before, lev_before, prompt_type=ptype_label)
             except Exception as e:
                 self.logger.warning(f"[Ensemble] Ошибка в {name}: {e}")
                 print(f"     └─ Ошибка: {e}")
@@ -554,7 +563,8 @@ CORRECTED TEXT:"""
         return best_result
 
     def _create_result(self, corrected_text: str, temperature: float, prompt: str,
-                      reference: str, original: str, wer_original: float, lev_original: float) -> Dict[str, Any]:
+                      reference: str, original: str, wer_original: float, lev_original: float,
+                      prompt_type: str = "базовый") -> Dict[str, Any]:
         cleaned = TextPostprocessor.clean_text(corrected_text)
         if not cleaned or len(cleaned.strip()) < len(original.strip()) * 0.3:
             cleaned = original
@@ -573,6 +583,7 @@ CORRECTED TEXT:"""
             "perplexity": perplexity_result,
             "best_model": self.model_name,
             "best_temperature": str(temperature),
+            "best_prompt_type": prompt_type,
             "metrics_correction": {
                 "WER_0": wer_original, "WER": wer_after, "delta_WER": delta_wer,
                 "LevRating_0": lev_original, "LevRating": lev_after, "delta_LEV": delta_lev,
@@ -589,7 +600,7 @@ CORRECTED TEXT:"""
         return delta_wer + LEV_WEIGHT * delta_lev + perplexity_term
 
     def _create_empty_result(self) -> Dict[str, Any]:
-        return {"corrected_text": "", "ensemble_outputs": [], "prompt_correction": "", "adaptive_config": {}, "perplexity": {}, "best_model": self.model_name, "best_temperature": "N/A", "metrics_correction": {}}
+        return {"corrected_text": "", "ensemble_outputs": [], "prompt_correction": "", "adaptive_config": {}, "perplexity": {}, "best_model": self.model_name, "best_temperature": "N/A", "best_prompt_type": "базовый", "metrics_correction": {}}
 
     def log_execution(self, message: str):
         self.logger.info(f"[{self.name}] - {message}")

@@ -497,13 +497,13 @@ delta_WER: {FileSaver._safe_float(m.get("delta_WER"))}
 LevRating_0: {FileSaver._safe_float(m.get("LevRating_0"))}
 LevRating: {FileSaver._safe_float(m.get("LevRating"))}
 delta_LEV: {FileSaver._safe_float(m.get("delta_LEV"))}
+PROMPT: {prompt_num}
+Time: {correction_time:.3f} s
 Perplexity: {FileSaver._safe_float(state.get("perplexity", {}).get("perplexity"))}
 Quality: {FileSaver._safe_str(m.get("quality_assessment"))}
 Best_Model: {best_model}
 Best_Temperature: {best_temperature}
 Best_Prompt: {best_prompt[:200]}...
-PROMPT: {prompt_num}
-Time: {correction_time:.3f} s
 """
         with open(filename, "w", encoding="cp1251", errors="replace") as f: f.write(content)
         metrics_content = f"""################################################################################
@@ -811,7 +811,8 @@ def main():
             "best_model": client.model,
             "best_prompt": "",
             "perplexity": {},
-            "best_temperature": "N/A"
+            "best_temperature": "N/A",
+            "best_prompt_type": "базовый"
         }
         try:
             processing_start = time.time()
@@ -904,13 +905,15 @@ def main():
                 XLSExporter.update_xls_after_each_document(metrics_row, time_stat)
             # Обновляем веб-монитор с duration (общее время теста)
             if web_monitor:
+                prompt_type_label = final_state.get("best_prompt_type", "базовый") or "базовый"
+                prompt_sum_label = final_state.get("best_prompt_summary_type", "базовый") or "базовый"
                 web_monitor.update_test_status(
                     test_id,
                     "completed",
                     file_metrics,
-                    prompt_correction=final_state.get("prompt_correction", ""),
+                    prompt_correction=prompt_type_label,
                     corrected_text=final_state.get("corrected_text", ""),
-                    prompt_summary=final_state.get("prompt_summary", ""),
+                    prompt_summary=prompt_sum_label,
                     summary_text=final_state.get("summary_text", ""),
                     duration=total_time   # ✅ передаём длительность теста
                 )
@@ -1033,15 +1036,23 @@ def main():
     if all_metrics:
         successful = [m for m in all_metrics if m.get('delta_WER') != 'N/A']
         if successful:
-            avg_delta_wer = sum(float(m.get('delta_WER',0) or 0) for m in successful)/len(successful)
-            avg_lev = sum(float(m.get('LevRating',0) or 0) for m in successful)/len(successful)
-            avg_cor = sum(float(m.get('CorScore',0) or 0) for m in successful)/len(successful)
-            avg_sum = sum(float(m.get('SumScore',0) or 0) for m in successful if m.get('SumScore')!='N/A')/len(successful)
-            avg_meteor = sum(float(m.get('meteor',0) or 0) for m in successful if m.get('meteor')!='N/A')/len(successful)
-            avg_llm = sum(float(m.get('llm_judge',0) or 0) for m in successful if m.get('llm_judge')!='N/A')/len(successful)
-            avg_g_eval = sum(float(m.get('g_eval_score',0) or 0) for m in successful if m.get('g_eval_score')!='N/A')/len(successful)
+            def _safe_metric_float(val):
+                """Безопасный парсинг метрик: '6 из 10' -> 6.0, 'N/A' -> 0, и т.д."""
+                if val is None or val == 'N/A' or val == '': return 0.0
+                if isinstance(val, str) and 'из' in val:
+                    try: return float(val.split()[0])
+                    except: return 0.0
+                try: return float(val)
+                except: return 0.0
+            avg_delta_wer = sum(_safe_metric_float(m.get('delta_WER')) for m in successful)/len(successful)
+            avg_lev = sum(_safe_metric_float(m.get('LevRating')) for m in successful)/len(successful)
+            avg_cor = sum(_safe_metric_float(m.get('CorScore')) for m in successful)/len(successful)
+            avg_sum = sum(_safe_metric_float(m.get('SumScore')) for m in successful if m.get('SumScore')!='N/A')/len(successful)
+            avg_meteor = sum(_safe_metric_float(m.get('meteor')) for m in successful if m.get('meteor')!='N/A')/len(successful)
+            avg_llm = sum(_safe_metric_float(m.get('llm_judge')) for m in successful if m.get('llm_judge')!='N/A')/len(successful)
+            avg_g_eval = sum(_safe_metric_float(m.get('g_eval_score')) for m in successful if m.get('g_eval_score')!='N/A')/len(successful)
             if BERTSCORE_ENABLED:
-                avg_bert = sum(float(m.get('BertScore',0) or 0) for m in successful if m.get('BertScore')!='N/A')/len(successful)
+                avg_bert = sum(_safe_metric_float(m.get('BertScore')) for m in successful if m.get('BertScore')!='N/A')/len(successful)
                 print_metric(f"     └─ Средний BertScore: {avg_bert:.4f}")
             print_metric(f"     └─ Средний ΔWER: {avg_delta_wer:.4f}")
             print_metric(f"     └─ Средний LevRating: {avg_lev:.4f}")
@@ -1111,7 +1122,11 @@ def main():
     logger.info(f"Date log folder: {date_log_folder}")
     logger.info("=" * 80)
     orchestrator.close()
-    if web_monitor: web_monitor.stop()
+    if web_monitor:
+        print_warning("  ⏳ Ожидание 60 секунд для экспорта таблицы веб-монитором...")
+        logger.info("[WebMonitor] Ожидание 60 секунд перед остановкой для завершения экспорта Excel")
+        time.sleep(60)
+        web_monitor.stop()
     print("\n")
 
 

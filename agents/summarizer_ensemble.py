@@ -294,6 +294,7 @@ SUMMARY:"""
         best_sumscore = -1.0
         best_idx = 0
         best_metrics = None
+        best_prompt_type = "базовый"
 
         print("\n" + "-" * 80)
         print("  📊 ОЦЕНКА ВАРИАНТОВ СУММАРИЗАЦИИ (РЕАЛЬНЫЕ МЕТРИКИ)")
@@ -334,13 +335,14 @@ SUMMARY:"""
                 best_temp = temp
                 best_prompt = prompts_list[i]
                 best_metrics = metrics
+                best_prompt_type = prompt_type
 
         if majority_metrics and majority_metrics.get("SumScore", 0) > best_sumscore:
             print(f"  ✅ Majority vote лучше (SumScore={majority_metrics.get('SumScore', 0):.4f} > {best_sumscore:.4f})")
-            best_result = self._create_result(majority_variant, 0.5, "majority_vote", reference_summary, input_text, majority_metrics)
+            best_result = self._create_result(majority_variant, 0.5, "majority_vote", reference_summary, input_text, majority_metrics, prompt_type="majority")
         elif best_sumscore >= 0:
             print(f"  ✅ Лучший вариант #{best_idx+1} (temp={best_temp:.2f}, SumScore={best_sumscore:.4f})")
-            best_result = self._create_result(best_variant, best_temp, best_prompt, reference_summary, input_text, best_metrics)
+            best_result = self._create_result(best_variant, best_temp, best_prompt, reference_summary, input_text, best_metrics, prompt_type=best_prompt_type)
         else:
             print(f"  ⚠️ Нет валидных вариантов, используется пустое резюме")
             best_result = self._create_empty_result()
@@ -497,6 +499,15 @@ SUMMARY:"""
         for name, prompt, temp in strategies:
             if attempts >= SUMMARY_MAX_RETRY_ATTEMPTS:
                 break
+            # Определяем тип промпта для меток в веб-мониторе
+            if name == "few_shot":
+                ptype_label = "few-shot"
+            elif name == "cot":
+                ptype_label = "CoT"
+            elif name.startswith("saved"):
+                ptype_label = "saved"
+            else:
+                ptype_label = "базовый"
             print(f"\n  Попытка {attempts+1}: стратегия '{name}' (temp={temp})")
             try:
                 full_prompt = prompt.format(text=input_text)
@@ -514,11 +525,11 @@ SUMMARY:"""
                 print(f"     └─ SumScore={sumscore:.4f}")
                 if sumscore > 0.7:
                     print(f"     └─ ✅ Успех! SumScore > 0.7")
-                    return self._create_result(cleaned, temp, full_prompt, reference, input_text, metrics)
+                    return self._create_result(cleaned, temp, full_prompt, reference, input_text, metrics, prompt_type=ptype_label)
                 if sumscore > best_sumscore:
                     print(f"     └─ Новый лучший результат (SumScore={sumscore:.4f})")
                     best_sumscore = sumscore
-                    best_result = self._create_result(cleaned, temp, full_prompt, reference, input_text, metrics)
+                    best_result = self._create_result(cleaned, temp, full_prompt, reference, input_text, metrics, prompt_type=ptype_label)
             except Exception as e:
                 self.logger.warning(f"[SummarizerEnsemble] Ошибка в стратегии {name}: {e}")
             attempts += 1
@@ -527,14 +538,15 @@ SUMMARY:"""
         return best_result
 
     def _create_result(self, summary_text: str, temperature: float, prompt: str,
-                       reference: str, original: str, metrics: Dict[str, float]) -> Dict[str, Any]:
+                       reference: str, original: str, metrics: Dict[str, float],
+                       prompt_type: str = "базовый") -> Dict[str, Any]:
         cleaned = TextPostprocessor.clean_text(summary_text)
         return {
             "summary_text": cleaned,
             "summary_outputs": [],
             "prompt_summary": prompt,
             "best_temperature_summary": str(temperature),
-            "best_prompt_summary_type": "",
+            "best_prompt_summary_type": prompt_type,
             "best_model": self.model_name,
             "metrics_summary": metrics
         }

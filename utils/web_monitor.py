@@ -521,6 +521,8 @@ class WebMonitor:
                 metrics['best_temp_cor'] = metrics['best_temperature']
             elif 'best_temp_cor' not in metrics:
                 metrics['best_temp_cor'] = 'N/A'
+            if 'best_temperature_summary' not in metrics:
+                metrics['best_temperature_summary'] = 'N/A'
             if 'delta_wer' in metrics:
                 metrics['delta_WER'] = metrics.pop('delta_wer')
             if 'delta_lev' in metrics:
@@ -780,12 +782,12 @@ HTML_TEMPLATE = """
         <table id="metrics-table">
             <thead>
                 <tr><th>ID</th><th>Статус</th><th>ΔWER</th><th>ΔLev</th><th>LevRating</th><th>Perplexity</th><th>CorScore</th>
-                    <th>Prompt_cor</th><th>G-Eval</th><th>BertScore</th><th>METEOR</th><th>LLM-Judge</th>
-                    <th>SumScore</th><th>Prompt_sum</th><th>Длительность</th>
+                    <th>Prompt_cor</th><th>Temp</th><th>G-Eval</th><th>BertScore</th><th>METEOR</th><th>LLM-Judge</th>
+                    <th>SumScore</th><th>Prompt_sum</th><th>Temp_sum</th><th>Длительность</th>
                 </tr>
             </thead>
             <tbody id="tests-body">
-                <tr><td colspan="15">Загрузка...<\/td><\/tr>
+                <tr><td colspan="17">Загрузка...<\/td><\/tr>
             <\/tbody>
         <\/table>
     <\/div>
@@ -830,9 +832,10 @@ HTML_TEMPLATE = """
     function getPromptNumber(promptText) {
         if (!promptText) return null;
         const text = promptText.toLowerCase();
-        if (text.includes('few-shot') || text.includes('пример') || text.includes('примеры')) return 3;
-        if (text.includes('шаг') || text.includes('cot') || text.includes('chain of thought')) return 4;
-        if (text.includes('лучший промпт') || text.includes('saved') || text.includes('из памяти')) return 2;
+        if (text.includes('self-consistency') || text.includes('sc')) return 5;
+        if (text.includes('cot') || text.includes('chain of thought') || text.includes('шаг')) return 4;
+        if (text.includes('few-shot') || text.includes('few_shot') || text.includes('пример') || text.includes('примеры')) return 3;
+        if (text.includes('saved') || text.includes('из памяти') || text.includes('лучший промпт')) return 2;
         return 1;
     }
 
@@ -842,7 +845,8 @@ HTML_TEMPLATE = """
             1: 'базовый',
             2: 'из памяти',
             3: 'few-shot',
-            4: 'CoT'
+            4: 'CoT',
+            5: 'SC'
         };
         return desc[num] || 'N/A';
     }
@@ -976,8 +980,8 @@ HTML_TEMPLATE = """
 
                 const headers = [
                     'ID', 'Статус', 'ΔWER', 'ΔLev', 'LevRating', 'Perplexity', 'CorScore',
-                    'Prompt_cor', 'G-Eval', 'BertScore', 'METEOR', 'LLM-Judge', 'SumScore',
-                    'Prompt_sum', 'Длительность (сек)'
+                    'Prompt_cor', 'Temp_cor', 'G-Eval', 'BertScore', 'METEOR', 'LLM-Judge', 'SumScore',
+                    'Prompt_sum', 'Temp_sum', 'Длительность (сек)'
                 ];
 
                 const rows = [headers];
@@ -987,6 +991,8 @@ HTML_TEMPLATE = """
                     const perplexityVal = getMetricValue(m, 'perplexity', 0);
                     const promptCor = formatPromptCell(test.prompt_correction_text);
                     const promptSum = formatPromptCell(test.prompt_summary_text);
+                    const tempCor = formatTemp(m.best_temp_cor);
+                    const tempSum = formatTemp(m.best_temperature_summary);
                     const duration = test.duration && test.duration > 0 ? test.duration.toFixed(2) : '—';
 
                     rows.push([
@@ -998,12 +1004,14 @@ HTML_TEMPLATE = """
                         perplexityVal.toFixed(4),
                         getMetricValue(m, 'CorScore', 0).toFixed(4),
                         promptCor,
+                        tempCor,
                         getMetricValue(m, 'G-Eval', 0).toFixed(4),
                         getMetricValue(m, 'BertScore', 0).toFixed(4),
                         getMetricValue(m, 'METEOR', 0).toFixed(4),
                         getMetricValue(m, 'LLM_Judge', 0).toFixed(1),
                         getMetricValue(m, 'SumScore', 0).toFixed(4),
                         promptSum,
+                        tempSum,
                         duration
                     ]);
                 }
@@ -1044,8 +1052,8 @@ HTML_TEMPLATE = """
                     rows.push([
                         'СРЕДНИЕ', majorityStatus,
                         avg.delta_WER, avg.delta_LEV, avg.LevRating, avg.Perplexity, avg.CorScore,
-                        '—', avg.G_Eval, avg.BertScore, avg.METEOR, avg.LLM_Judge, avg.SumScore,
-                        '—', avgDuration
+                        '—', '—', avg.G_Eval, avg.BertScore, avg.METEOR, avg.LLM_Judge, avg.SumScore,
+                        '—', '—', avgDuration
                     ]);
                 }
 
@@ -1060,7 +1068,7 @@ HTML_TEMPLATE = """
 
     function updateTable(tests) {
         const tbody = document.getElementById('tests-body');
-        if (!tests || tests.length === 0) { tbody.innerHTML = '<tr><td colspan="15">Нет данных</td></tr>'; return; }
+        if (!tests || tests.length === 0) { tbody.innerHTML = '<tr><td colspan="17">Нет данных</td></tr>'; return; }
 
         const completedTests = tests.filter(t => t.status === 'completed');
         const failedTests = tests.filter(t => t.status === 'failed');
@@ -1139,6 +1147,8 @@ HTML_TEMPLATE = """
             const perplexityVal = getMetricValue(m, 'perplexity', 0);
             const promptCorDisplay = formatPromptCell(test.prompt_correction_text);
             const promptSumDisplay = formatPromptCell(test.prompt_summary_text);
+            const tempCor = formatTemp(m.best_temp_cor);
+            const tempSum = formatTemp(m.best_temperature_summary);
             rows += `<tr class="${rowClass}">
                 <td>${escapeHtml(test.id)}</td>
                 <td><span class="status-badge ${statusClass}">${test.status}</span></td>
@@ -1148,12 +1158,14 @@ HTML_TEMPLATE = """
                 <td>${formatMetric(perplexityVal, 'Perplexity')}</td>
                 <td>${formatMetric(m.CorScore, 'CorScore')}</td>
                 <td>${promptCorDisplay}</td>
+                <td>${tempCor}</td>
                 <td>${formatMetric(m['G-Eval'], 'G-Eval')}</td>
                 <td>${formatMetric(m.BertScore, 'BertScore')}</td>
                 <td>${formatMetric(m.METEOR, 'METEOR')}</td>
                 <td>${formatLLMJudge(m.LLM_Judge)}</td>
                 <td>${formatMetric(m.SumScore, 'SumScore')}</td>
                 <td>${promptSumDisplay}</td>
+                <td>${tempSum}</td>
                 <td>${formatDuration(duration)}</td>
               </tr>`;
         }
@@ -1169,12 +1181,14 @@ HTML_TEMPLATE = """
                 <td><strong>${avg.Perplexity}</strong></td>
                 <td><strong>${avg.CorScore}</strong></td>
                 <td style="white-space: pre-line;"><strong>${formatPromptStats(promptCorStats)}</strong></td>
+                <td>—</td>
                 <td><strong>${avg.G_Eval}</strong></td>
                 <td><strong>${avg.BertScore}</strong></td>
                 <td><strong>${avg.METEOR}</strong></td>
                 <td><strong>${avg.LLM_Judge}</strong></td>
                 <td><strong>${avg.SumScore}</strong></td>
                 <td style="white-space: pre-line;"><strong>${formatPromptStats(promptSumStats)}</strong></td>
+                <td>—</td>
                 <td><strong>${durationInfo}</strong></td>
               </tr>`;
         }
