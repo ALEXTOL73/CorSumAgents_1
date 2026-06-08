@@ -267,26 +267,30 @@ SUMMARY:"""
         best_prompt = prompts[0] if prompts else ""
         best_metrics = None
 
-        print("\n" + "-" * 80)
-        print("  📊 ОЦЕНКА ВАРИАНТОВ СУММАРИЗАЦИИ (с BertScore)")
-        print("-" * 80)
+        print()
+        print("  ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐")
+        print("  │                              ОЦЕНКА ВАРИАНТОВ СУММАРИЗАЦИИ                                      │")
+        print("  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤")
+        print("  │ № │  SumScore │  G-Eval  │ LLM-Judge │  METEOR  │ BertScore │   Промпт    │  Temp  │")
+        print("  ├──────────────────────────────────────────────────────────────────────────────────────────────────┤")
 
         for i, variant in enumerate(variants):
+            temp = temperatures[i] if i < len(temperatures) else 0.5
+            temp_str = f"{temp:.2f}"
+
             if not variant:
+                print(f"  │ {i+1} │   пустой   │          │           │          │           │  #1 (base)  │ {temp_str:5}  │")
                 continue
+
             metrics = self._compute_summary_metrics(variant, reference, original)
             sumscore = metrics.get("SumScore", 0)
             g_eval = metrics.get("G_Eval", 0)
             meteor = metrics.get("METEOR", 0)
             llm_judge = metrics.get("LLM_Judge", 0)
             bertscore = metrics.get("BertScore", 0)
-            temp = temperatures[i] if i < len(temperatures) else 0.5
 
-            print(f"  Вариант #{i+1} (temp={temp:.2f}):")
-            print(f"     └─ SumScore: {sumscore:.4f}, G-Eval: {g_eval:.4f}")
-            print(f"     └─ METEOR: {meteor:.4f}, LLM-Judge: {llm_judge:.1f}")
-            if BERTSCORE_ENABLED:
-                print(f"     └─ BertScore: {bertscore:.4f}")
+            bert_str = f"{bertscore:.4f}" if BERTSCORE_ENABLED and bertscore else "  N/A  "
+            print(f"  │ {i+1} │ {sumscore:8.4f}  │ {g_eval:7.4f} │ {llm_judge:8.1f}  │ {meteor:7.4f}  │ {bert_str:9} │  #1 (base)  │ {temp_str:5}  │")
 
             if sumscore > best_sumscore:
                 best_sumscore = sumscore
@@ -296,12 +300,12 @@ SUMMARY:"""
                 best_prompt = prompts[i]
                 best_metrics = metrics
 
-        print("-" * 80)
+        print("  └──────────────────────────────────────────────────────────────────────────────────────────────────┘")
         if best_variant:
             print(f"  ✅ Лучший вариант #{best_idx+1} (temp={best_temp:.2f}, SumScore={best_sumscore:.4f})")
         else:
             print(f"  ⚠️ Нет валидных вариантов")
-        print("-" * 80 + "\n")
+        print()
 
         return self._create_result(best_variant, best_temp, best_prompt, reference, original, best_metrics)
 

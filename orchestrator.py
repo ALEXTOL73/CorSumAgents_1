@@ -41,7 +41,13 @@ class AgentState(TypedDict):
     prompt_summary: Annotated[str, last_value]
     corrected_text: Annotated[str, last_value]
     ensemble_outputs: Annotated[List[str], last_value]
+    ensemble_prompts: Annotated[List[str], last_value]
+    ensemble_temperatures: Annotated[List[Any], last_value]
     summary_outputs: Annotated[List[str], last_value]
+    summary_temperatures: Annotated[List[Any], last_value]
+    summary_prompts: Annotated[List[str], last_value]
+    top_temps_cor: Annotated[str, last_value]
+    top_temps_sum: Annotated[str, last_value]
     summary_text: Annotated[str, last_value]
     metrics_correction: Annotated[Dict[str, Any], last_value]
     metrics_summary: Annotated[Dict[str, Any], last_value]
@@ -374,7 +380,9 @@ class Orchestrator:
             "needs_retry_correction": False, "needs_retry_summary": False,
             "aggregator_used": False, "aggregation_similarity": 0.0,
             "aggregation_reason": "", "best_model": self.client.model if hasattr(self.client, 'model') else "unknown",
-            "best_prompt": "", "ensemble_outputs": [], "summary_outputs": [],
+            "best_prompt": "", "ensemble_outputs": [], "ensemble_prompts": [], "ensemble_temperatures": [], "summary_outputs": [],
+            "summary_temperatures": [], "summary_prompts": [],
+            "top_temps_cor": "", "top_temps_sum": "",
             "best_temperature_summary": "N/A", "best_prompt_summary_type": "",
             "detected_language": "ru", "summary_language": "ru",
             "reflection_suggestion": "", "total_iterations": 0,

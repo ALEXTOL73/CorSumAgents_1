@@ -481,6 +481,7 @@ class FileSaver:
         best_prompt = state.get("prompt_correction", "Промпт не доступен") or "Промпт не доступен"
         best_model = state.get("best_model", MODEL_NAME)
         best_temperature = state.get("best_temperature", "0.3")
+        best_prompt_type = state.get("best_prompt_type", "базовый") or "базовый"
         content = f"""=== INCORRECT_TEXT ===
 {input_fmt}
 
@@ -512,10 +513,14 @@ Best_Prompt: {best_prompt[:200]}...
 # Тест ID: {test_id}
 # Модель: {best_model}
 # Температура: {best_temperature}
+# Промпт: {best_prompt_type}
 ################################################################################
 WER: {FileSaver._safe_float(m.get("WER_0"))} → {FileSaver._safe_float(m.get("WER"))} (Δ={FileSaver._safe_float(m.get("delta_WER"))})
 LevRating: {FileSaver._safe_float(m.get("LevRating_0"))} → {FileSaver._safe_float(m.get("LevRating"))} (Δ={FileSaver._safe_float(m.get("delta_LEV"))})
 Perplexity: {FileSaver._safe_float(state.get("perplexity", {}).get("perplexity"))}
+Time: {correction_time:.3f}
+Best_Temperature: {best_temperature}
+Best_Prompt: {best_prompt_type}
 Quality: {FileSaver._safe_str(m.get("quality_assessment"))}
 """
         with open(metrics_filename, "w", encoding="cp1251", errors="replace") as f: f.write(metrics_content)
@@ -533,6 +538,7 @@ Quality: {FileSaver._safe_str(m.get("quality_assessment"))}
         best_prompt = state.get("prompt_summary", "Промпт не доступен") or "Промпт не доступен"
         best_model = state.get("best_model", MODEL_NAME)
         best_temp_summary = state.get("best_temperature_summary", "N/A")
+        best_prompt_summary_type = state.get("best_prompt_summary_type", "базовый") or "базовый"
         meteor = FileSaver._safe_float(m.get("meteor"))
         llm_score = m.get("llm_score", "N/A")
         llm_score_formatted = FileSaver._format_llm_judge_for_display(llm_score)
@@ -551,17 +557,17 @@ Quality: {FileSaver._safe_str(m.get("quality_assessment"))}
 {reference_fmt}
 
 === METRICS ===
+METEOR: {meteor}
 LLM-Judge: {llm_score_formatted}
 G-Eval: {g_eval}
-METEOR: {meteor}
 BertScore: {bertscore}
+PROMPT: {prompt_num}
+Time: {summarization_time:.2f} s
 SumScore: {sumscore}
 Quality: {quality_short}
 Best_Model: {best_model}
 Best_Temperature_Summary: {best_temp_summary}
 Best_Prompt: {best_prompt}
-PROMPT: {prompt_num}
-Time: {summarization_time:.2f} s
 """
         with open(filename, "w", encoding="cp1251", errors="replace") as f: f.write(content)
         metrics_content = f"""################################################################################
@@ -570,12 +576,16 @@ Time: {summarization_time:.2f} s
 # Тест ID: {test_id}
 # Модель: {best_model}
 # Температура суммаризации: {best_temp_summary}
+# Промпт: {best_prompt_summary_type}
 ################################################################################
+METEOR: {meteor}
 LLM-Judge: {llm_score}/10
 G-Eval: {g_eval}
-METEOR: {meteor}
 BertScore: {bertscore}
 SumScore: {sumscore}
+Time: {summarization_time:.2f}
+Best_Temperature: {best_temp_summary}
+Best_Prompt: {best_prompt_summary_type}
 Compression: {m.get('compression_ratio', 'N/A')}
 Quality: {quality}
 """
@@ -915,7 +925,9 @@ def main():
                     corrected_text=final_state.get("corrected_text", ""),
                     prompt_summary=prompt_sum_label,
                     summary_text=final_state.get("summary_text", ""),
-                    duration=total_time   # ✅ передаём длительность теста
+                    duration=total_time,
+                    top_temps_cor=final_state.get("top_temps_cor", ""),
+                    top_temps_sum=final_state.get("top_temps_sum", "")
                 )
             print_normal("\n  💾 СОХРАНЕНИЕ РЕЗУЛЬТАТОВ...")
             metrics_row_csv = {

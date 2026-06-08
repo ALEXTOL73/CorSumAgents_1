@@ -161,6 +161,26 @@ class WebMonitor:
                             metrics['perplexity'] = float(val)
                         elif h == 'Total_Time':
                             metrics['total_time'] = float(val)
+                        elif h == 'Correction_Time':
+                            try:
+                                metrics['correction_time'] = float(val)
+                            except ValueError:
+                                pass
+                        elif h == 'Summary_Time':
+                            try:
+                                metrics['summary_time'] = float(val)
+                            except ValueError:
+                                pass
+                        elif h == 'Prompt_Num':
+                            metrics['prompt_num'] = val
+                        elif h == 'best_temp_cor':
+                            metrics['best_temp_cor'] = val
+                        elif h == 'best_temperature_summary':
+                            metrics['best_temperature_summary'] = val
+                        elif h == 'best_model_cor':
+                            metrics['best_model_cor'] = val
+                        elif h == 'best_model_sum':
+                            metrics['best_model_sum'] = val
                     if metrics:
                         excel_data[test_id] = metrics
             logger.info(f"[WebMonitor] Загружено {len(excel_data)} записей из Excel")
@@ -210,7 +230,7 @@ class WebMonitor:
             corrected_text = ""
             summary_text = ""
 
-            # --- Чтение correction_metrics (WER, LevRating, Perplexity) ---
+            # --- Чтение correction_metrics (WER, LevRating, Perplexity, Temperature, Time, Prompt) ---
             corr_metrics_file = correction_metrics_dir / f"{test_id}.txt"
             if corr_metrics_file.exists():
                 try:
@@ -231,14 +251,49 @@ class WebMonitor:
                             metrics['LevRating_0'] = l0
                             metrics['LevRating'] = l1
                             metrics['delta_LEV'] = dl
-                        elif 'Perplexity:' in line:
+                        elif 'Perplexity:' in line and not line.startswith('#'):
                             m = re.search(r'Perplexity:\s*([\d.]+)', line)
                             if m:
                                 metrics['perplexity'] = float(m.group(1))
+                        # Температура из комментария (# Температура: 0.1) или из тела (Best_Temperature: 0.1)
+                        elif ('Температура:' in line or 'Temperature:' in line or 'температура:' in line) and 'best_temp_cor' not in metrics:
+                            m = re.search(r'[Тт]емпература[:\s]*([\d.]+)', line)
+                            if not m:
+                                m = re.search(r'Temperature[:\s]*([\d.]+)', line, re.IGNORECASE)
+                            if m:
+                                metrics['best_temp_cor'] = m.group(1)
+                        elif line.startswith('Best_Temperature:') and 'best_temp_cor' not in metrics:
+                            m = re.search(r'Best_Temperature:\s*([^\s]+)', line)
+                            if m:
+                                val = m.group(1).strip()
+                                if val and val != 'N/A':
+                                    metrics['best_temp_cor'] = val
+                        # Время выполнения (Time: 246.437)
+                        elif line.startswith('Time:') and duration == 0.0:
+                            m = re.search(r'Time:\s*([\d.]+)', line)
+                            if m:
+                                duration = float(m.group(1))
+                        # Тип промпта (# Промпт: базовый или Best_Prompt: базовый)
+                        elif ('Промпт:' in line or 'Prompt:' in line) and not prompt_correction:
+                            m = re.search(r'[Пп]ромпт[:\s]*(.+)', line)
+                            if not m:
+                                m = re.search(r'Prompt[:\s]*(.+)', line, re.IGNORECASE)
+                            if m:
+                                pval = m.group(1).strip()
+                                # Отбрасываем декоративные символы # из комментариев
+                                pval = pval.lstrip('#').strip()
+                                if pval and pval != 'N/A' and not pval.startswith('###'):
+                                    prompt_correction = pval
+                        elif line.startswith('Best_Prompt:') and not prompt_correction:
+                            m = re.search(r'Best_Prompt:\s*(.+)', line)
+                            if m:
+                                pval = m.group(1).strip()
+                                if pval and pval != 'N/A':
+                                    prompt_correction = pval
                 except Exception as e:
                     logger.warning(f"Ошибка чтения {corr_metrics_file}: {e}")
 
-            # --- Чтение summary_metrics (LLM-Judge, G-Eval, METEOR, BertScore, SumScore) ---
+            # --- Чтение summary_metrics (LLM-Judge, G-Eval, METEOR, BertScore, SumScore, Temperature, Time, Prompt) ---
             sum_metrics_file = summary_metrics_dir / f"{test_id}.txt"
             if sum_metrics_file.exists():
                 try:
@@ -262,6 +317,24 @@ class WebMonitor:
                     m = re.search(r'SumScore:\s*([\d.]+)', content)
                     if m:
                         metrics['SumScore'] = float(m.group(1))
+                    # Температура суммаризации (из комментария или Best_Temperature)
+                    if 'best_temperature_summary' not in metrics:
+                        m = re.search(r'[Тт]емпература\s+суммаризации[:\s]*([\d.]+)', content)
+                        if not m:
+                            m = re.search(r'Best_Temperature:\s*([^\s\n]+)', content)
+                        if m:
+                            val = m.group(1).strip()
+                            if val and val != 'N/A':
+                                metrics['best_temperature_summary'] = val
+                    # Тип промпта суммаризации
+                    if not prompt_summary:
+                        m = re.search(r'[Пп]ромпт[:\s]*(.+)', content)
+                        if not m:
+                            m = re.search(r'^Best_Prompt:\s*(.+)', content, re.MULTILINE)
+                        if m:
+                            pval = m.group(1).strip().lstrip('#').strip()
+                            if pval and pval != 'N/A' and not pval.startswith('###'):
+                                prompt_summary = pval
                 except Exception as e:
                     logger.warning(f"Ошибка чтения {sum_metrics_file}: {e}")
 
@@ -278,6 +351,12 @@ class WebMonitor:
                     m = re.search(r'Best_Prompt:\s*(.+?)(?:\n|$)', content)
                     if m:
                         prompt_correction = m.group(1).strip()
+                    # Best_Temperature (коррекция)
+                    m = re.search(r'Best_Temperature:\s*([^\n]+)', content)
+                    if m:
+                        temp_val = m.group(1).strip()
+                        if temp_val and temp_val != 'N/A':
+                            metrics['best_temp_cor'] = temp_val
                     # Time
                     m = re.search(r'Time:\s*([\d.]+)\s*s', content)
                     if m:
@@ -307,6 +386,12 @@ class WebMonitor:
                     m = re.search(r'Best_Prompt:\s*(.+?)(?:\n|$)', content)
                     if m:
                         prompt_summary = m.group(1).strip()
+                    # Best_Temperature_Summary (суммаризация)
+                    m = re.search(r'Best_Temperature_Summary:\s*([^\n]+)', content)
+                    if m:
+                        temp_val = m.group(1).strip()
+                        if temp_val and temp_val != 'N/A':
+                            metrics['best_temperature_summary'] = temp_val
                     m = re.search(r'=== SUMMARY_TEXT ===\n(.*?)\n=== ETALON_SUMMARY ===', content, re.DOTALL)
                     if m:
                         summary_text = m.group(1).strip()
@@ -315,11 +400,23 @@ class WebMonitor:
 
             # --- Обогащаем метриками из Excel (приоритет) ---
             if test_id in excel_data:
-                for k, v in excel_data[test_id].items():
+                ex = excel_data[test_id]
+                for k, v in ex.items():
+                    # Не перезаписываем duration и prompt из Excel, если они уже установлены из файлов
+                    if k == 'correction_time' and duration == 0.0:
+                        duration = v
+                        continue
+                    if k == 'total_time' and duration == 0.0:
+                        duration = v
+                        continue
+                    if k == 'prompt_num' and not prompt_correction:
+                        try:
+                            pnum = int(v)
+                            prompt_correction = f"№{pnum} (базовый)" if pnum == 1 else f"№{pnum}"
+                        except (ValueError, TypeError):
+                            prompt_correction = str(v)
+                        continue
                     metrics[k] = v
-                # Если в Excel есть Total_Time, и duration ещё не установлен, используем его
-                if 'total_time' in excel_data[test_id] and duration == 0.0:
-                    duration = excel_data[test_id]['total_time']
 
             # --- Вычисляем CorScore, если отсутствует ---
             if 'CorScore' not in metrics:
@@ -367,6 +464,8 @@ class WebMonitor:
                 "duration": duration,
                 "prompt_correction_text": prompt_correction,
                 "prompt_summary_text": prompt_summary,
+                "corrected_text": (corrected_text[:500] + "...") if corrected_text and len(corrected_text) > 500 else corrected_text,
+                "summary_text": (summary_text[:500] + "...") if summary_text and len(summary_text) > 500 else summary_text,
             }
 
         # Сохраняем в глобальное состояние
@@ -375,8 +474,7 @@ class WebMonitor:
             monitor_state["completed_tests"] = len(tests_dict)
             monitor_state["total_tests"] = len(tests_dict)
             monitor_state["failed_tests"] = 0
-            examples_list.sort(key=lambda x: x["timestamp"], reverse=True)
-            monitor_state["examples"]["outputs"] = examples_list[:5]
+            monitor_state["examples"]["outputs"] = examples_list
             self._recalculate_aggregated_metrics()
             monitor_state["last_update"] = datetime.now().isoformat()
 
@@ -501,7 +599,8 @@ class WebMonitor:
     def update_test_status(self, test_id: str, status: str, metrics: Dict[str, Any] = None,
                            prompt_correction: str = None, prompt_summary: str = None,
                            corrected_text: str = None, summary_text: str = None,
-                           duration: float = None):
+                           duration: float = None,
+                           top_temps_cor: str = None, top_temps_sum: str = None):
         if not self.running:
             return
 
@@ -547,7 +646,11 @@ class WebMonitor:
                     "timestamp": datetime.now().isoformat(),
                     "duration": duration if duration is not None else 0.0,
                     "prompt_correction_text": prompt_correction or "№1 (базовый)",
-                    "prompt_summary_text": prompt_summary or "№1 (базовый)"
+                    "prompt_summary_text": prompt_summary or "№1 (базовый)",
+                    "corrected_text": (corrected_text[:500] + "...") if corrected_text and len(corrected_text) > 500 else corrected_text,
+                    "summary_text": (summary_text[:500] + "...") if summary_text and len(summary_text) > 500 else summary_text,
+                    "top_temps_cor": top_temps_cor or "",
+                    "top_temps_sum": top_temps_sum or "",
                 }
                 monitor_state["tests"][test_id] = test_data
                 monitor_state["completed_tests"] = len(
@@ -873,7 +976,7 @@ HTML_TEMPLATE = """
             document.getElementById('progress').style.width = progress + '%';
             document.getElementById('progress').innerText = progress + '%';
             updateCharts(data.tests);
-            updateExamples(data.examples);
+            updateExamples(data.examples, data.tests);
             updateTable(data.tests);
         } catch(e) { console.error(e); }
     }
@@ -910,17 +1013,41 @@ HTML_TEMPLATE = """
         create('llmjudgeChart', llmJudge, 'LLM-Judge', '#ff8c00', 0, 10, thr.llmjudge, false);
     }
 
-    function updateExamples(examples) {
-        if (!examples || !examples.outputs) return;
+    function updateExamples(examples, tests) {
         const corrDiv = document.getElementById('corrected-texts');
         const sumDiv = document.getElementById('summary-texts');
-        if (examples.outputs.length === 0) {
-            corrDiv.innerHTML = '<p>Нет данных</p>';
-            sumDiv.innerHTML = '<p>Нет данных</p>';
-            return;
+        const allTests = tests || [];
+
+        // Последние 5 тестов с corrected_text
+        const withCorr = allTests.filter(t => t.corrected_text && t.corrected_text.length > 0);
+        const last5Corr = withCorr.slice(-5);
+        // Последние 5 тестов с summary_text
+        const withSum = allTests.filter(t => t.summary_text && t.summary_text.length > 0);
+        const last5Sum = withSum.slice(-5);
+
+        // Исправленные тексты
+        if (last5Corr.length === 0) {
+            const fallbackCorr = (examples && examples.outputs) ? examples.outputs.filter(e => e.corrected_text).slice(-5) : [];
+            if (fallbackCorr.length === 0) {
+                corrDiv.innerHTML = '<p>Нет данных</p>';
+            } else {
+                corrDiv.innerHTML = fallbackCorr.map(ex => `<div class="example-item ${ex.status==='failed'?'failed':''}"><h4>${escapeHtml(ex.test_id)} ${ex.status==='failed'?'❌ ОШИБКА':'✅'}</h4><pre>${escapeHtml(ex.corrected_text||'Нет данных')}</pre></div>`).join('');
+            }
+        } else {
+            corrDiv.innerHTML = last5Corr.map(t => `<div class="example-item ${t.status==='failed'?'failed':''}"><h4>${escapeHtml(t.id)} ${t.status==='failed'?'❌ ОШИБКА':'✅'}</h4><pre>${escapeHtml(t.corrected_text||'Нет данных')}</pre></div>`).join('');
         }
-        corrDiv.innerHTML = examples.outputs.map(ex => `<div class="example-item ${ex.status==='failed'?'failed':''}"><h4>${escapeHtml(ex.test_id)} (${ex.timestamp}) ${ex.status==='failed'?'❌ ОШИБКА':'✅'}</h4><pre>${escapeHtml(ex.corrected_text||'Нет данных')}</pre></div>`).join('');
-        sumDiv.innerHTML = examples.outputs.map(ex => `<div class="example-item ${ex.status==='failed'?'failed':''}"><h4>${escapeHtml(ex.test_id)} (${ex.timestamp}) ${ex.status==='failed'?'❌ ОШИБКА':'✅'}</h4><pre>${escapeHtml(ex.summary_text||'Нет данных')}</pre></div>`).join('');
+
+        // Резюме
+        if (last5Sum.length === 0) {
+            const fallbackSum = (examples && examples.outputs) ? examples.outputs.filter(e => e.summary_text).slice(-5) : [];
+            if (fallbackSum.length === 0) {
+                sumDiv.innerHTML = '<p>Нет данных</p>';
+            } else {
+                sumDiv.innerHTML = fallbackSum.map(ex => `<div class="example-item ${ex.status==='failed'?'failed':''}"><h4>${escapeHtml(ex.test_id)} ${ex.status==='failed'?'❌ ОШИБКА':'✅'}</h4><pre>${escapeHtml(ex.summary_text||'Нет данных')}</pre></div>`).join('');
+            }
+        } else {
+            sumDiv.innerHTML = last5Sum.map(t => `<div class="example-item ${t.status==='failed'?'failed':''}"><h4>${escapeHtml(t.id)} ${t.status==='failed'?'❌ ОШИБКА':'✅'}</h4><pre>${escapeHtml(t.summary_text||'Нет данных')}</pre></div>`).join('');
+        }
     }
 
     function isBelow(metricName, val) {
@@ -959,6 +1086,13 @@ HTML_TEMPLATE = """
         const entries = Object.entries(statsMap).map(([num, count]) => ({ num: parseInt(num), count }));
         entries.sort((a,b) => b.count - a.count);
         return entries.map(e => `${e.num} - №${e.num} : ${e.count} раз`).join('\\n');
+    }
+    
+    function formatTempStats(statsMap) {
+        if (!statsMap || Object.keys(statsMap).length === 0) return '—';
+        const entries = Object.entries(statsMap).map(([temp, count]) => ({ temp, count }));
+        entries.sort((a,b) => b.count - a.count);
+        return entries.slice(0, 3).map(e => `t=${e.temp} — ${e.count} раз`).join('\\n');
     }
 
     function getFormattedDate() {
@@ -1049,11 +1183,34 @@ HTML_TEMPLATE = """
                     }
                     const avgDuration = (durationCount > 0) ? (totalDuration / durationCount).toFixed(2) : '—';
 
+                    // Подсчёт статистики температур для Excel
+                    let tempCorStatsExcel = {};
+                    let tempSumStatsExcel = {};
+                    for (let test of completedTests) {
+                        const m = test.metrics || {};
+                        const tc = m.best_temp_cor;
+                        if (tc !== undefined && tc !== null && tc !== 'N/A' && tc !== '') {
+                            let tv = parseFloat(String(tc));
+                            if (!isNaN(tv)) {
+                                const key = tv.toFixed(2);
+                                tempCorStatsExcel[key] = (tempCorStatsExcel[key] || 0) + 1;
+                            }
+                        }
+                        const ts = m.best_temperature_summary;
+                        if (ts !== undefined && ts !== null && ts !== 'N/A' && ts !== '') {
+                            let tv = parseFloat(String(ts));
+                            if (!isNaN(tv)) {
+                                const key = tv.toFixed(2);
+                                tempSumStatsExcel[key] = (tempSumStatsExcel[key] || 0) + 1;
+                            }
+                        }
+                    }
+
                     rows.push([
                         'СРЕДНИЕ', majorityStatus,
                         avg.delta_WER, avg.delta_LEV, avg.LevRating, avg.Perplexity, avg.CorScore,
-                        '—', '—', avg.G_Eval, avg.BertScore, avg.METEOR, avg.LLM_Judge, avg.SumScore,
-                        '—', '—', avgDuration
+                        '—', formatTempStats(tempCorStatsExcel).split(String.fromCharCode(10)).join('; '), avg.G_Eval, avg.BertScore, avg.METEOR, avg.LLM_Judge, avg.SumScore,
+                        '—', formatTempStats(tempSumStatsExcel).split(String.fromCharCode(10)).join('; '), avgDuration
                     ]);
                 }
 
@@ -1081,6 +1238,8 @@ HTML_TEMPLATE = """
         };
         let promptCorStats = {};
         let promptSumStats = {};
+        let tempCorStats = {};
+        let tempSumStats = {};
 
         let totalDuration = 0;
         let durationCount = 0;
@@ -1113,6 +1272,24 @@ HTML_TEMPLATE = """
                 if (promptSumText) {
                     let num = getPromptNumber(promptSumText);
                     if (num) promptSumStats[num] = (promptSumStats[num] || 0) + 1;
+                }
+
+                // Подсчёт статистики температур
+                const tc = m.best_temp_cor;
+                if (tc !== undefined && tc !== null && tc !== 'N/A' && tc !== '') {
+                    let tv = parseFloat(String(tc));
+                    if (!isNaN(tv)) {
+                        const key = tv.toFixed(2);
+                        tempCorStats[key] = (tempCorStats[key] || 0) + 1;
+                    }
+                }
+                const ts = m.best_temperature_summary;
+                if (ts !== undefined && ts !== null && ts !== 'N/A' && ts !== '') {
+                    let tv = parseFloat(String(ts));
+                    if (!isNaN(tv)) {
+                        const key = tv.toFixed(2);
+                        tempSumStats[key] = (tempSumStats[key] || 0) + 1;
+                    }
                 }
             }
             const cnt = completedTests.length;
@@ -1181,14 +1358,14 @@ HTML_TEMPLATE = """
                 <td><strong>${avg.Perplexity}</strong></td>
                 <td><strong>${avg.CorScore}</strong></td>
                 <td style="white-space: pre-line;"><strong>${formatPromptStats(promptCorStats)}</strong></td>
-                <td>—</td>
+                <td style="white-space: pre-line;"><strong>${formatTempStats(tempCorStats)}</strong></td>
                 <td><strong>${avg.G_Eval}</strong></td>
                 <td><strong>${avg.BertScore}</strong></td>
                 <td><strong>${avg.METEOR}</strong></td>
                 <td><strong>${avg.LLM_Judge}</strong></td>
                 <td><strong>${avg.SumScore}</strong></td>
                 <td style="white-space: pre-line;"><strong>${formatPromptStats(promptSumStats)}</strong></td>
-                <td>—</td>
+                <td style="white-space: pre-line;"><strong>${formatTempStats(tempSumStats)}</strong></td>
                 <td><strong>${durationInfo}</strong></td>
               </tr>`;
         }

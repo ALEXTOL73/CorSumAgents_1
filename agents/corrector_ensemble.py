@@ -457,10 +457,6 @@ CORRECTED TEXT:"""
         wer_original = self.wer_calc.calculate(reference, original) if reference else 0.5
         lev_original = self.lev_calc.calculate(reference, original) if reference else 0.0
 
-        print("\n" + "-" * 80)
-        print("  📊 ОЦЕНКА ВАРИАНТОВ КОРРЕКЦИИ")
-        print("-" * 80)
-
         best_variant, best_score, best_idx, best_temp, best_prompt, best_type = original, -float('inf'), 0, temperatures[0] if temperatures else 0.5, full_prompts[0] if full_prompts else "", prompt_types[0] if prompt_types else "базовый"
 
         for i, variant in enumerate(variants):
@@ -477,25 +473,15 @@ CORRECTED TEXT:"""
             temp = temperatures[i] if i < len(temperatures) else 0.5
             ptype = prompt_types[i] if i < len(prompt_types) else "неизвестно"
 
-            print(f"  Вариант #{i+1} (temp={temp:.2f}, {ptype}):")
-            print(f"     └─ WER: {wer_variant:.4f} (Δ={delta_wer:+.4f})")
-            print(f"     └─ LevRating: {lev_variant:.4f} (Δ={delta_lev:+.4f})")
-            print(f"     └─ Perplexity: {perplexity:.4f}")
-            print(f"     └─ Score: {score:.6f}")
-
             self.logger.info(f"[Ensemble] Вариант #{i+1} ({ptype}, temp={temp:.2f}): WER={wer_variant:.4f} (Δ={delta_wer:+.4f}), Lev={lev_variant:.4f} (Δ={delta_lev:+.4f}), PPL={perplexity:.4f}, Score={score:.6f}")
 
             if score > best_score:
                 best_score, best_variant, best_idx, best_temp, best_prompt, best_type = score, variant, i, temp, full_prompts[i], ptype
 
-        print("-" * 80)
         if best_score < 0:
-            print(f"  ⚠️ Лучший score = {best_score:.4f} < 0, возвращаем оригинал")
             self.logger.warning(f"[Ensemble] Лучший score <0, возвращаем оригинал")
             return self._create_result(original, best_temp, best_prompt, reference, original, wer_original, lev_original, prompt_type=best_type)
         else:
-            print(f"  ✅ Лучший вариант #{best_idx+1} (temp={best_temp:.2f}, тип={best_type}, score={best_score:.6f})")
-            print("-" * 80 + "\n")
             return self._create_result(best_variant, best_temp, best_prompt, reference, original, wer_original, lev_original, prompt_type=best_type)
 
     def _adaptive_retry(self, current_best: Dict[str, Any], base_prompt: str, input_text: str,

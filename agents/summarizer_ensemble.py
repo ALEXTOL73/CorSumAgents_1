@@ -288,7 +288,7 @@ SUMMARY:"""
         majority_metrics = None
         if majority_variant:
             majority_metrics = self._call_judge_for_metrics(input_text, majority_variant, reference_summary)
-            print(f"  Majority vote: SumScore={majority_metrics.get('SumScore', 0):.4f}")
+            self.logger.info(f"[SummarizerEnsemble] Majority vote: SumScore={majority_metrics.get('SumScore', 0):.4f}")
 
         best_result = None
         best_sumscore = -1.0
@@ -296,37 +296,32 @@ SUMMARY:"""
         best_metrics = None
         best_prompt_type = "базовый"
 
-        print("\n" + "-" * 80)
-        print("  📊 ОЦЕНКА ВАРИАНТОВ СУММАРИЗАЦИИ (РЕАЛЬНЫЕ МЕТРИКИ)")
-        print("-" * 80)
-
         for i, variant in enumerate(variants):
+            temp = temps[i] if i < len(temps) else 0.5
+
+            # Определяем тип промпта
+            prompt_full = prompts_list[i] if i < len(prompts_list) else ""
+            if "ПРИМЕРЫ" in prompt_full:
+                prompt_type = "few-shot"
+            elif "ШАГ" in prompt_full:
+                prompt_type = "CoT"
+            elif "сохранённый" in prompt_full.lower() or "saved" in prompt_full.lower():
+                prompt_type = "saved"
+            elif "self-consistency" in prompt_full.lower() or "sc" in prompt_full.lower():
+                prompt_type = "self-consistency"
+            else:
+                prompt_type = "базовый"
+
             if not variant:
                 state["summary_metrics_list"].append({"SumScore": 0})
-                print(f"  Вариант #{i+1}: пустой, пропускаем")
+                self.logger.info(f"[SummarizerEnsemble] Вариант #{i+1}: пустой")
                 continue
 
             metrics = self._call_judge_for_metrics(input_text, variant, reference_summary)
             state["summary_metrics_list"].append(metrics)
             sumscore = metrics.get("SumScore", 0)
-            g_eval = metrics.get("G_Eval", 0)
-            meteor = metrics.get("METEOR", 0)
-            llm_judge = metrics.get("LLM_Judge", 0)
-            bertscore = metrics.get("BertScore", 0)
-            temp = temps[i] if i < len(temps) else 0.5
-            prompt_type = "базовый"
-            if "ПРИМЕРЫ" in prompts_list[i]:
-                prompt_type = "few-shot"
-            elif "ШАГ" in prompts_list[i]:
-                prompt_type = "CoT"
-            elif "сохранённый" in prompts_list[i].lower():
-                prompt_type = "saved"
 
-            print(f"  Вариант #{i+1} (temp={temp:.2f}, {prompt_type}):")
-            print(f"     └─ SumScore: {sumscore:.4f}, G-Eval: {g_eval:.4f}")
-            print(f"     └─ METEOR: {meteor:.4f}, LLM-Judge: {llm_judge:.1f}")
-            if BERTSCORE_ENABLED:
-                print(f"     └─ BertScore: {bertscore:.4f}")
+            self.logger.info(f"[SummarizerEnsemble] Вариант #{i+1} ({prompt_type}, temp={temp:.2f}): SumScore={sumscore:.4f}")
 
             if sumscore > best_sumscore:
                 best_sumscore = sumscore
@@ -338,15 +333,14 @@ SUMMARY:"""
                 best_prompt_type = prompt_type
 
         if majority_metrics and majority_metrics.get("SumScore", 0) > best_sumscore:
-            print(f"  ✅ Majority vote лучше (SumScore={majority_metrics.get('SumScore', 0):.4f} > {best_sumscore:.4f})")
+            self.logger.info(f"[SummarizerEnsemble] Majority vote лучше (SumScore={majority_metrics.get('SumScore', 0):.4f})")
             best_result = self._create_result(majority_variant, 0.5, "majority_vote", reference_summary, input_text, majority_metrics, prompt_type="majority")
         elif best_sumscore >= 0:
-            print(f"  ✅ Лучший вариант #{best_idx+1} (temp={best_temp:.2f}, SumScore={best_sumscore:.4f})")
+            self.logger.info(f"[SummarizerEnsemble] Лучший вариант #{best_idx+1} (temp={best_temp:.2f}, SumScore={best_sumscore:.4f})")
             best_result = self._create_result(best_variant, best_temp, best_prompt, reference_summary, input_text, best_metrics, prompt_type=best_prompt_type)
         else:
-            print(f"  ⚠️ Нет валидных вариантов, используется пустое резюме")
+            self.logger.warning(f"[SummarizerEnsemble] Нет валидных вариантов")
             best_result = self._create_empty_result()
-        print("-" * 80 + "\n")
 
         if best_result.get("metrics_summary", {}).get("SumScore", 0) < 0.5:
             self.logger.warning(f"[SummarizerEnsemble] SumScore низкий, запуск адаптивных попыток")
@@ -366,6 +360,8 @@ SUMMARY:"""
                 self.logger.error(f"[SummarizerEnsemble] Ошибка сохранения в память: {e}")
 
         best_result["summary_outputs"] = variants
+        best_result["summary_temperatures"] = temps
+        best_result["summary_prompts"] = prompts_list
         elapsed = time.time() - start_time
         self.logger.info(f"[SummarizerEnsemble] Завершено за {elapsed:.2f} сек")
         return best_result

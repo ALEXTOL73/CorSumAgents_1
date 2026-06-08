@@ -86,22 +86,27 @@ class CorrectorAggregator(BaseAgent):
             if not variant:
                 scores.append(-1e9)
                 prompt_type = ensemble_prompts[i] if i < len(ensemble_prompts) else "N/A"
+                pt_lower = prompt_type.lower()
                 # ✅ Определяем номер ТИПА промпта (1-5), не индекс варианта
-                if "saved" in prompt_type.lower():
+                if "saved" in pt_lower or "mem" in pt_lower or "сохран" in pt_lower:
                     prompt_short = "#2 (Mem)"
-                elif "few_shot" in prompt_type.lower():
+                elif "few_shot" in pt_lower or "few-shot" in pt_lower or "fs" in pt_lower:
                     prompt_short = "#3 (FS)"
-                elif "cot" in prompt_type.lower() or "chain" in prompt_type.lower():
+                elif "cot" in pt_lower or "chain" in pt_lower or "сот" in pt_lower:
                     prompt_short = "#4 (CoT)"
-                elif "self-consistency" in prompt_type.lower():
+                elif "self-consistency" in pt_lower or "sc" in pt_lower or "самосоглас" in pt_lower:
                     prompt_short = "#5 (SC)"
-                elif "base" in prompt_type.lower() or prompt_type == "N/A":
+                elif "base" in pt_lower or "базов" in pt_lower or prompt_type == "N/A":
                     prompt_short = "#1 (base)"
                 else:
                     prompt_short = f"#{i+1}"
                 temp_val = ensemble_temps[i] if i < len(ensemble_temps) else "N/A"
+                if isinstance(temp_val, (int, float)):
+                    temp_str = f"{temp_val:.2f}"
+                else:
+                    temp_str = str(temp_val)
 
-                print(f"  │ {i+1} │   пустой       │                 │             │          │         │         │ {prompt_short:10} │{temp_val:4} │")
+                print(f"  │ {i+1} │   пустой       │                 │             │          │         │         │ {prompt_short:10} │ {temp_str:5} │")
                 continue
             wer_v = self.wer_calc.calculate(reference_text, variant) if reference_text else 0.5
             lev_v = self.lev_calc.calculate(reference_text, variant) if reference_text else 0.0
@@ -112,28 +117,50 @@ class CorrectorAggregator(BaseAgent):
             scores.append(score)
             # ✅ Определяем номер ТИПА промпта (1-5), не индекс варианта
             prompt_type = ensemble_prompts[i] if i < len(ensemble_prompts) else "N/A"
-            if "saved" in prompt_type.lower():
+            pt_lower = prompt_type.lower()
+            if "saved" in pt_lower or "mem" in pt_lower or "сохран" in pt_lower:
                 prompt_short = "#2 (Mem)"
-            elif "few_shot" in prompt_type.lower():
+            elif "few_shot" in pt_lower or "few-shot" in pt_lower or "fs" in pt_lower:
                 prompt_short = "#3 (FS)"
-            elif "cot" in prompt_type.lower() or "chain" in prompt_type.lower():
+            elif "cot" in pt_lower or "chain" in pt_lower or "сот" in pt_lower:
                 prompt_short = "#4 (CoT)"
-            elif "self-consistency" in prompt_type.lower():
+            elif "self-consistency" in pt_lower or "sc" in pt_lower or "самосоглас" in pt_lower:
                 prompt_short = "#5 (SC)"
-            elif "base" in prompt_type.lower() or prompt_type == "N/A":
+            elif "base" in pt_lower or "базов" in pt_lower or prompt_type == "N/A":
                 prompt_short = "#1 (base)"
             else:
                 prompt_short = f"#{i+1}"
             temp_val = ensemble_temps[i] if i < len(ensemble_temps) else "N/A"
-            print(f"  │ {i+1} │ {wer_v:8.4f}  │ {lev_v:8.4f}  │ {ppl:8.4f}   │ {delta_wer:+6.4f}  │ {delta_lev:+6.4f} │{score:7.3f} │ {prompt_short:10}  │{temp_val:4}    │")
+            # Форматируем температуру единообразно
+            if isinstance(temp_val, (int, float)):
+                temp_str = f"{temp_val:.2f}"
+            else:
+                temp_str = str(temp_val)
+            print(f"  │ {i+1} │ {wer_v:8.4f}  │ {lev_v:8.4f}  │ {ppl:8.4f}   │ {delta_wer:+6.4f}  │ {delta_lev:+6.4f} │{score:7.3f} │ {prompt_short:10}  │ {temp_str:5}  │")
 
-        print("  └──────────────────────────────────────────────────────────────────────────────────────────────┘")
+        print("  └─────────────────────────────────────────────────────────────────────────────────────────────┘")
         print()
 
         best_idx = max(range(len(scores)), key=lambda i: scores[i])
         best_correction = ensemble_outputs[best_idx].strip()
         print(f"  ✅ Лучший вариант: #{best_idx+1} (Score = {scores[best_idx]:.4f})")
         print(f"  📝 Текст: {best_correction[:200]}...")
+
+        # Топ-3 температур по Score
+        scored_temp_pairs = []
+        for i, sc in enumerate(scores):
+            if sc > -1e9 and i < len(ensemble_temps):
+                t = ensemble_temps[i]
+                try:
+                    t_float = float(t) if not isinstance(t, (int, float)) else t
+                    scored_temp_pairs.append((t_float, sc))
+                except (ValueError, TypeError):
+                    pass
+        scored_temp_pairs.sort(key=lambda x: x[1], reverse=True)
+        top_temps_parts = []
+        for t, sc in scored_temp_pairs[:3]:
+            top_temps_parts.append(f"{t:.2f} ({sc:.3f})")
+        top_temps_cor_str = "\n".join(top_temps_parts) if top_temps_parts else "N/A"
 
         alt_variants = [v for i, v in enumerate(ensemble_outputs) if i != best_idx]
         alt_1 = alt_variants[0] if len(alt_variants) > 0 else ""
@@ -177,7 +204,8 @@ class CorrectorAggregator(BaseAgent):
             "aggregator_used": True,
             "base_variant_idx": best_idx,
             "aggregation_similarity": similarity,
-            "aggregation_reason": reason
+            "aggregation_reason": reason,
+            "top_temps_cor": top_temps_cor_str
         }
 
     def _select_best_base(self, variants: List[str], reference: str, original: str) -> tuple:
